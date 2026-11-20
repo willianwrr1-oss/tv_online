@@ -302,7 +302,7 @@ private fun SourcesPage(vm: MainViewModel) {
     val sources by Repo.sources.collectAsState()
     val refreshing by Repo.refreshing.collectAsState()
     var pickCountry by remember { mutableStateOf(false) }
-    var confirmReset by remember { mutableStateOf(false) }
+    var confirmResetList by remember { mutableStateOf(false) }
     var customDialog by remember { mutableStateOf(false) }
 
     SimpleScroll {
@@ -359,7 +359,7 @@ private fun SourcesPage(vm: MainViewModel) {
             }
             RowDivider()
             ActionRow("Resetar lista de canais", "Volta tudo ao inicial: só as fontes originais, sem canais importados nem escolhas", danger = true) {
-                confirmReset = true
+                confirmResetList = true
             }
             RowDivider()
             ActionRow("Importar arquivo M3U do celular", "Escolha o arquivo; canais que você já tem são ignorados") {
@@ -383,9 +383,9 @@ private fun SourcesPage(vm: MainViewModel) {
         )
     }
 
-    if (confirmReset) {
+    if (confirmResetList) {
         AlertDialog(
-            onDismissRequest = { confirmReset = false },
+            onDismissRequest = { confirmResetList = false },
             title = { Text("Resetar a lista de canais?") },
             text = {
                 Text(
@@ -396,13 +396,13 @@ private fun SourcesPage(vm: MainViewModel) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    confirmReset = false
+                    confirmResetList = false
                     Repo.resetChannelList()
                     vm.refresh(true)
                     vm.toast("Lista de canais resetada.")
                 }) { Text("Resetar", color = MaterialTheme.colorScheme.error) }
             },
-            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancelar") } }
+            dismissButton = { TextButton(onClick = { confirmResetList = false }) { Text("Cancelar") } }
         )
     }
     if (pickCountry) {
@@ -586,7 +586,7 @@ private fun GuidePage(vm: MainViewModel) {
                 editUrls = true
             }
             RowDivider()
-            ActionRow("Voltar ao link padrão", "Usa o guia do projeto iptv-com/epg para o Brasil") {
+            ActionRow("Voltar ao link padrão", "Guia do Brasil (epgshare01 e BrazilTVEPG)") {
                 SettingsStore.update { it.copy(epgUrls = Epg.DEFAULT_URL) }
                 vm.toast("Link padrão restaurado. Toque em Atualizar agora.")
             }

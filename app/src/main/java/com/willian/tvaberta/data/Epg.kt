@@ -34,7 +34,10 @@ data class Programme(
  * (sem o sufixo @SD/@HD) e, se não achar, pelo nome do canal.
  */
 object Epg {
-    const val DEFAULT_URL = "https://raw.githubusercontent.com/iptv-com/epg/main/guides/brazil.xml"
+    // O link antigo (iptv-com/epg) saiu do ar (HTTP 404). Hoje: guia do Brasil do epgshare01 e, de reserva, o BrazilTVEPG.
+    const val OLD_DEAD_MARK = "iptv-com/epg"
+    const val DEFAULT_URL = "https://epgshare01.online/epgshare01/epg_ripper_BR1.xml.gz\n" +
+        "https://raw.githubusercontent.com/limaalef/BrazilTVEPG/refs/heads/main/epg.xml"
     const val SUGGESTED_URL = "https://iptv-epg.org/files/epg-br.xml"
 
     private lateinit var ctx: Context

@@ -104,7 +104,9 @@ object SettingsStore {
             epgEnabled = sp.getBoolean("epgEnabled", d.epgEnabled),
             showNowOnCards = sp.getBoolean("showNowOnCards", d.showNowOnCards),
             epgRefreshHours = sp.getInt("epgRefreshHours", d.epgRefreshHours),
-            epgUrls = sp.getString("epgUrls", d.epgUrls) ?: d.epgUrls,
+            epgUrls = (sp.getString("epgUrls", d.epgUrls) ?: d.epgUrls).let {
+                if (it.contains(Epg.OLD_DEAD_MARK)) d.epgUrls else it
+            },
             lastChannelKey = sp.getString("lastChannelKey", d.lastChannelKey) ?: "",
             lastRefresh = sp.getLong("lastRefresh", d.lastRefresh),
             lastEpgRefresh = sp.getLong("lastEpgRefresh", d.lastEpgRefresh),
