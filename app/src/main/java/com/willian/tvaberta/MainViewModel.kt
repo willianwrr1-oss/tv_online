@@ -49,6 +49,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val query = MutableStateFlow("")
     val category = MutableStateFlow<String?>(null)
+    val origin = MutableStateFlow<String?>(null)
 
     var tab by mutableIntStateOf(0)
     var settingsPage by mutableStateOf<String?>(null)
@@ -272,9 +273,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val res: Pair<Int, Int>? = withContext(Dispatchers.IO) {
                 try {
-                    val text = getApplication<Application>().contentResolver
-                        .openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    if (text == null) null else Repo.importM3u(text)
+                    val cr = getApplication<Application>().contentResolver
+                    var name: String? = try {
+                        cr.query(uri, null, null, null, null)?.use { c ->
+                            if (c.moveToFirst()) {
+                                val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                                if (i >= 0) c.getString(i) else null
+                            } else null
+                        }
+                    } catch (e: Exception) {
+                        null
+                    }
+                    name = (name ?: "").replace(Regex("(?i)\\.(m3u8?|txt)$"), "").trim()
+                    if (name.isEmpty()) name = "Lista importada"
+                    val text = cr.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    if (text == null) null else Repo.importM3u(text, name)
                 } catch (e: Exception) {
                     null
                 }

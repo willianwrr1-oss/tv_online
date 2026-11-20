@@ -76,7 +76,7 @@ fun categoriesOf(items: List<ChannelItem>): List<String> =
         .groupingBy { it }
         .eachCount()
         .entries
-        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { catLabel(it.key) })
+        .sortedBy { catLabel(it.key).lowercase() }
         .map { it.key }
 
 fun sortItems(list: List<ChannelItem>, mode: Int): List<ChannelItem> = when (mode) {

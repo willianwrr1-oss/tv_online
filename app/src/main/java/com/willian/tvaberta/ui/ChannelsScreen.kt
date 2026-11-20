@@ -67,9 +67,17 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
     val refreshing by Repo.refreshing.collectAsState()
     val actions = rememberActions(vm)
 
-    val base = remember(all, s) {
+    val origin by vm.origin.collectAsState()
+    val baseAll = remember(all, s) {
         val listed = all.filter { isListed(it, s) }
         if (favoritesOnly) listed.filter { it.st.favorite } else listed
+    }
+    val origins = remember(baseAll) {
+        baseAll.map { it.ch.sourceId }.distinct().sortedBy { Repo.originName(it).lowercase() }
+    }
+    val org = origin?.takeIf { it in origins }
+    val base = remember(baseAll, org) {
+        if (org == null) baseAll else baseAll.filter { it.ch.sourceId == org }
     }
     val cats = remember(base) { categoriesOf(base) }
     val cat = category?.takeIf { it in cats }
@@ -120,6 +128,28 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
                 }
             }
         )
+
+        if (origins.size > 1) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = org == null,
+                        onClick = { vm.origin.value = null },
+                        label = { Text("Todas as listas") }
+                    )
+                }
+                items(origins, key = { it }) { o ->
+                    FilterChip(
+                        selected = org == o,
+                        onClick = { vm.origin.value = if (org == o) null else o },
+                        label = { Text(Repo.originName(o)) }
+                    )
+                }
+            }
+        }
 
         if (s.showCategoryChips && cats.size > 1) {
             LazyRow(

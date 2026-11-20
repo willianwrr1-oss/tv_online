@@ -20,7 +20,7 @@ android {
         targetSdk = 34
         // Sobe a cada execução do GitHub Actions, para o Android aceitar a atualização por cima.
         versionCode = maxOf(1, runNumber)
-        versionName = "1.5.0"
+        versionName = "1.6.0"
 
         val fmt = SimpleDateFormat("dd/MM/yyyy HH:mm")
         fmt.timeZone = TimeZone.getTimeZone("America/Sao_Paulo")
