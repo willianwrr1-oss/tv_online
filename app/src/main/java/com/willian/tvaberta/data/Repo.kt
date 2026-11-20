@@ -166,6 +166,7 @@ object Repo {
                     if (!v.customName.isNullOrBlank()) e.put("n", v.customName)
                     if (v.plays > 0) e.put("p", v.plays)
                     if (v.lastPlayed > 0L) e.put("l", v.lastPlayed)
+                    if (!v.customGroup.isNullOrBlank()) e.put("g", v.customGroup)
                     o.put(k, e)
                 }
                 writeAtomic(File(ctx.filesDir, "states.json"), o.toString())
@@ -188,6 +189,7 @@ object Repo {
                     customName = e.optString("n", "").ifBlank { null },
                     plays = e.optInt("p", 0),
                     lastPlayed = e.optLong("l", 0L),
+                    customGroup = e.optString("g", "").ifBlank { null },
                 )
             }
             m
@@ -202,6 +204,15 @@ object Repo {
         if (_sources.value.any { it.id == id || it.url == url }) return
         _sources.update { it + Source(id, name, url, true) }
         persistSources()
+    }
+
+    /** Volta a lista de fontes para as quatro originais; apaga as listas baixadas das outras. */
+    fun resetSources() {
+        val keep = DefaultSources.list.map { it.id }.toSet()
+        _sources.value.filter { it.id !in keep }.forEach { File(listsDir(), it.id + ".m3u").delete() }
+        _sources.value = DefaultSources.list
+        persistSources()
+        scope.launch { reload() }
     }
 
     fun removeSource(id: String) {

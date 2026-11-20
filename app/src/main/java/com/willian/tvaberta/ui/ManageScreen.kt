@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -68,6 +69,7 @@ fun ManageScreen(vm: MainViewModel) {
     var query by remember { mutableStateOf("") }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var showAdd by remember { mutableStateOf(false) }
+    var moveKeys by remember { mutableStateOf<List<String>?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.importM3u(uri)
@@ -247,6 +249,14 @@ fun ManageScreen(vm: MainViewModel) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("Desativar")
                             }
+                            OutlinedButton(
+                                onClick = { moveKeys = keys },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.DriveFileMove, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Mover")
+                            }
                             Button(
                                 onClick = {
                                     vm.requestDelete(keys)
@@ -271,6 +281,14 @@ fun ManageScreen(vm: MainViewModel) {
                                 Icon(Icons.Default.Visibility, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text("Ativar")
+                            }
+                            OutlinedButton(
+                                onClick = { moveKeys = keys },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.DriveFileMove, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Mover")
                             }
                             Button(
                                 onClick = {
@@ -310,6 +328,14 @@ fun ManageScreen(vm: MainViewModel) {
                 icon = { Icon(Icons.Default.Add, null) },
                 text = { Text("Adicionar canal") }
             )
+        }
+    }
+
+    val mk = moveKeys
+    if (mk != null) {
+        MoveGroupDialog(vm, mk) {
+            moveKeys = null
+            selected = emptySet()
         }
     }
 

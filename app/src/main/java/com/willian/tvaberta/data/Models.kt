@@ -23,6 +23,7 @@ data class ChannelState(
     val customName: String? = null,
     val plays: Int = 0,
     val lastPlayed: Long = 0L,
+    val customGroup: String? = null,
 )
 
 /** Uma lista M3U de onde os canais são lidos. */

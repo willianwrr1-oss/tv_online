@@ -38,7 +38,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val items: StateFlow<List<ChannelItem>> =
         combine(Repo.channels, Repo.states) { chs, sts ->
-            chs.map { ChannelItem(it, sts[it.key] ?: ChannelState()) }
+            chs.map { ch ->
+                val st = sts[ch.key] ?: ChannelState()
+                val g = st.customGroup
+                ChannelItem(if (g != null) ch.copy(groups = listOf(g)) else ch, st)
+            }
         }
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -235,6 +239,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         Repo.updateStates(toDelete) { it.copy(deleted = true, favorite = false) }
         val msg = if (toDelete.size == 1) "1 canal duplicado excluído." else toDelete.size.toString() + " canais duplicados excluídos."
         events.tryEmit(UiEvent(msg, "Desfazer") { restore(toDelete, false) })
+    }
+
+    /** Move canais para outro grupo (ou, com null, volta ao grupo original). Dá para desfazer. */
+    fun moveToGroup(keys: List<String>, group: String?) {
+        if (keys.isEmpty()) return
+        val g = group?.trim()?.ifEmpty { null }
+        val before = HashMap<String, String?>()
+        for (k in keys) before[k] = Repo.states.value[k]?.customGroup
+        Repo.updateStates(keys) { it.copy(customGroup = g) }
+        val n = keys.size
+        val msg = if (g == null) {
+            if (n == 1) "Canal voltou ao grupo original." else n.toString() + " canais voltaram ao grupo original."
+        } else {
+            (if (n == 1) "Canal movido" else n.toString() + " canais movidos") + " para " + g + "."
+        }
+        events.tryEmit(UiEvent(msg, "Desfazer") {
+            for ((k, v) in before) Repo.updateState(k) { it.copy(customGroup = v) }
+        })
     }
 
     fun rename(key: String, name: String) {
