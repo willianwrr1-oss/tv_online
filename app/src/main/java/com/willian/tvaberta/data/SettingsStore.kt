@@ -37,9 +37,15 @@ data class AppSettings(
     val hideNot247: Boolean = false,
     val autoRefreshHours: Int = 24,
     val confirmDelete: Boolean = true,
+    // Guia de programação
+    val epgEnabled: Boolean = true,
+    val showNowOnCards: Boolean = true,
+    val epgRefreshHours: Int = 12,
+    val epgUrls: String = Epg.DEFAULT_URL,   // um link por linha
     // Internos
     val lastChannelKey: String = "",
     val lastRefresh: Long = 0L,
+    val lastEpgRefresh: Long = 0L,
 )
 
 object SettingsStore {
@@ -61,7 +67,8 @@ object SettingsStore {
     fun reset() {
         val keepKey = _flow.value.lastChannelKey
         val keepRefresh = _flow.value.lastRefresh
-        update { AppSettings(lastChannelKey = keepKey, lastRefresh = keepRefresh) }
+        val keepEpg = _flow.value.lastEpgRefresh
+        update { AppSettings(lastChannelKey = keepKey, lastRefresh = keepRefresh, lastEpgRefresh = keepEpg) }
     }
 
     private fun load(): AppSettings {
@@ -94,8 +101,13 @@ object SettingsStore {
             hideNot247 = sp.getBoolean("hideNot247", d.hideNot247),
             autoRefreshHours = sp.getInt("autoRefreshHours", d.autoRefreshHours),
             confirmDelete = sp.getBoolean("confirmDelete", d.confirmDelete),
+            epgEnabled = sp.getBoolean("epgEnabled", d.epgEnabled),
+            showNowOnCards = sp.getBoolean("showNowOnCards", d.showNowOnCards),
+            epgRefreshHours = sp.getInt("epgRefreshHours", d.epgRefreshHours),
+            epgUrls = sp.getString("epgUrls", d.epgUrls) ?: d.epgUrls,
             lastChannelKey = sp.getString("lastChannelKey", d.lastChannelKey) ?: "",
             lastRefresh = sp.getLong("lastRefresh", d.lastRefresh),
+            lastEpgRefresh = sp.getLong("lastEpgRefresh", d.lastEpgRefresh),
         )
     }
 
@@ -128,8 +140,13 @@ object SettingsStore {
             .putBoolean("hideNot247", s.hideNot247)
             .putInt("autoRefreshHours", s.autoRefreshHours)
             .putBoolean("confirmDelete", s.confirmDelete)
+            .putBoolean("epgEnabled", s.epgEnabled)
+            .putBoolean("showNowOnCards", s.showNowOnCards)
+            .putInt("epgRefreshHours", s.epgRefreshHours)
+            .putString("epgUrls", s.epgUrls)
             .putString("lastChannelKey", s.lastChannelKey)
             .putLong("lastRefresh", s.lastRefresh)
+            .putLong("lastEpgRefresh", s.lastEpgRefresh)
             .apply()
     }
 }

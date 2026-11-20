@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
@@ -43,6 +44,7 @@ import coil.imageLoader
 import com.willian.tvaberta.BuildConfig
 import com.willian.tvaberta.MainViewModel
 import com.willian.tvaberta.data.Countries
+import com.willian.tvaberta.data.Epg
 import com.willian.tvaberta.data.Repo
 import com.willian.tvaberta.data.SettingsStore
 
@@ -59,6 +61,7 @@ fun SettingsScreen(vm: MainViewModel) {
                 "reproducao" -> "Reprodução"
                 "canais" -> "Canais"
                 "fontes" -> "Fontes de canais"
+                "guia" -> "Guia de programação"
                 "dados" -> "Dados e cache"
                 else -> "Sobre"
             }
@@ -68,6 +71,7 @@ fun SettingsScreen(vm: MainViewModel) {
                 "reproducao" -> PlaybackPage()
                 "canais" -> ChannelsPage(vm)
                 "fontes" -> SourcesPage(vm)
+                "guia" -> GuidePage(vm)
                 "dados" -> DataPage(vm)
                 else -> AboutPage()
             }
@@ -103,6 +107,8 @@ private fun SettingsHome(vm: MainViewModel) {
         }
         SettingsSection("Conteúdo") {
             NavRow("Fontes de canais", "Países e listas M3U", Icons.Default.Public) { vm.settingsPage = "fontes" }
+            RowDivider()
+            NavRow("Guia de programação", "Programa no ar, grade e fontes do guia", Icons.Default.Schedule) { vm.settingsPage = "guia" }
             RowDivider()
             NavRow("Dados e cache", "Logos, listas e restauração", Icons.Default.Storage) { vm.settingsPage = "dados" }
         }
@@ -498,6 +504,86 @@ private fun AboutPage() {
                 .align(Alignment.CenterHorizontally)
                 .padding(top = 24.dp),
             tint = MaterialTheme.colorScheme.outline
+        )
+    }
+}
+
+
+// ------------------------------------------------------------------------------------ guia
+
+@Composable
+private fun GuidePage(vm: MainViewModel) {
+    val s by SettingsStore.flow.collectAsState()
+    val loading by Epg.loading.collectAsState()
+    var editUrls by remember { mutableStateOf(false) }
+    SimpleScroll {
+        SettingsSection("Exibição") {
+            SwitchRow("Ativar guia de programação", "Mostra o programa no ar e a grade de horários", s.epgEnabled) { v ->
+                SettingsStore.update { it.copy(epgEnabled = v) }
+                if (v) vm.refreshEpg(false)
+            }
+            RowDivider()
+            SwitchRow("Programa atual nos canais", "Mostra \"▶ nome do programa\" nos cartões e na lista", s.showNowOnCards) { v ->
+                SettingsStore.update { it.copy(showNowOnCards = v) }
+            }
+        }
+        SettingsSection("Atualização") {
+            IntChoiceRow(
+                "Atualizar o guia automaticamente",
+                listOf("Nunca", "A cada 6 horas", "A cada 12 horas", "Uma vez por dia"),
+                listOf(0, 6, 12, 24),
+                s.epgRefreshHours
+            ) { v -> SettingsStore.update { it.copy(epgRefreshHours = v) } }
+            RowDivider()
+            ActionRow(
+                if (loading) "Baixando guia..." else "Atualizar agora",
+                "Última atualização: " + formatDateTime(s.lastEpgRefresh)
+            ) { if (!loading) vm.refreshEpg(true) }
+        }
+        SettingsSection("Fonte do guia") {
+            ActionRow("Links do guia (XMLTV)", Epg.urlList(s.epgUrls).size.toString() + " link(s) configurado(s). Toque para editar") {
+                editUrls = true
+            }
+            RowDivider()
+            ActionRow("Voltar ao link padrão", "Usa o guia do projeto iptv-com/epg para o Brasil") {
+                SettingsStore.update { it.copy(epgUrls = Epg.DEFAULT_URL) }
+                vm.toast("Link padrão restaurado. Toque em Atualizar agora.")
+            }
+            Text(
+                "O guia é ligado ao canal pelo tvg-id ou, se não achar, pelo nome. Nem todo canal terá programação.",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        SettingsSection("Cache") {
+            ActionRow("Limpar guia baixado", "Apaga os arquivos do guia salvos no aparelho", danger = true) {
+                Epg.clearCache()
+                vm.toast("Guia apagado.")
+            }
+        }
+    }
+    if (editUrls) {
+        var text by remember { mutableStateOf(s.epgUrls) }
+        AlertDialog(
+            onDismissRequest = { editUrls = false },
+            title = { Text("Links do guia") },
+            text = {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Um link por linha (.xml ou .xml.gz)") },
+                    minLines = 3
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    editUrls = false
+                    SettingsStore.update { it.copy(epgUrls = text.trim()) }
+                    vm.refreshEpg(true)
+                }) { Text("Salvar e baixar") }
+            },
+            dismissButton = { TextButton(onClick = { editUrls = false }) { Text("Cancelar") } }
         )
     }
 }

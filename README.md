@@ -23,7 +23,7 @@ Versão para **celular** (Android 8.0 ou superior). A versão para Android TV / 
 1. Crie um repositório novo no GitHub (por exemplo `tv-aberta`), na branch `main`.
 2. Descompacte o ZIP e envie **todos** os arquivos e pastas para o repositório (Add file > Upload files). Atenção: a pasta `.github` é oculta e às vezes o navegador não a envia ao arrastar. Se a aba **Actions** não mostrar o fluxo "Gerar APK", crie o arquivo pela opção **Add file > Create new file**, digitando `.github/workflows/build-apk.yml` no nome, e cole o conteúdo do arquivo do ZIP.
 3. Abra a aba **Actions**. O fluxo **Gerar APK** roda sozinho a cada envio (ou clique em Run workflow).
-4. Quando ficar verde, abra a execução e baixe o artefato **TvAberta-apk**. Dentro vem o `.apk`; instale no celular.
+4. Quando ficar verde, abra a execução e baixe o artefato **TvAberta** (dentro vem o TvAberta.apk). Dentro vem o `.apk`; instale no celular.
 5. Se ficar vermelho, copie as linhas que começam com `e: ` (erro de Kotlin), `What went wrong:` ou `Could not resolve` e envie para correção.
 
 ## Assinatura (importante)
@@ -44,3 +44,11 @@ app/src/main/java/com/willian/tvaberta/
 ## Aviso
 
 O app é só um reprodutor: não hospeda nem transmite canais. Use apenas fontes legais. Listas que oferecem canais pagos de graça costumam ser pirataria.
+
+## Guia de programação (v1.2.0)
+
+- **No player:** aparece "Agora: nome do programa (início–fim)", barra de progresso e "A seguir".
+- **Aba Guia:** grade com canais nas linhas e horários nas colunas (rola para os lados); tocar num programa abre o canal.
+- **Canais:** o nome do programa no ar aparece nos cartões e na lista (pode desligar em Ajustes > Guia de programação).
+- **Ajustes > Guia de programação:** ligar/desligar, atualização automática, links do guia (XMLTV, um por linha), limpar cache.
+- Link padrão: `https://raw.githubusercontent.com/iptv-com/epg/main/guides/brazil.xml`. O guia é ligado ao canal pelo `tvg-id` ou, se não achar, pelo nome. Nem todo canal terá programação.

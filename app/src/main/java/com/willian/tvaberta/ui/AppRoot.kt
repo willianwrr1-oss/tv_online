@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tune
@@ -41,6 +42,7 @@ private class NavTab(val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
     NavTab("Canais", Icons.Default.LiveTv),
+    NavTab("Guia", Icons.Default.Schedule),
     NavTab("Favoritos", Icons.Default.Star),
     NavTab("Gerenciar", Icons.Default.Tune),
     NavTab("Ajustes", Icons.Default.Settings),
@@ -79,7 +81,7 @@ fun AppRoot(vm: MainViewModel) {
                                 selected = vm.tab == i,
                                 onClick = {
                                     vm.tab = i
-                                    if (i == 3) vm.settingsPage = null
+                                    if (i == 4) vm.settingsPage = null
                                 },
                                 icon = { Icon(t.icon, contentDescription = t.label) },
                                 label = { Text(t.label) }
@@ -95,8 +97,9 @@ fun AppRoot(vm: MainViewModel) {
                 ) {
                     when (vm.tab) {
                         0 -> ChannelsScreen(vm, favoritesOnly = false)
-                        1 -> ChannelsScreen(vm, favoritesOnly = true)
-                        2 -> ManageScreen(vm)
+                        1 -> GuideScreen(vm)
+                        2 -> ChannelsScreen(vm, favoritesOnly = true)
+                        3 -> ManageScreen(vm)
                         else -> SettingsScreen(vm)
                     }
                 }

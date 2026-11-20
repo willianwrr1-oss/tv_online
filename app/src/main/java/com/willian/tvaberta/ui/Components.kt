@@ -227,9 +227,10 @@ fun ChannelGridCard(item: ChannelItem, s: AppSettings, actions: ChannelActions, 
                 fontWeight = FontWeight.SemiBold
             )
             Spacer(Modifier.height(2.dp))
+            val nowT = nowTitle(item, s)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    catLabel(item.ch.groups.first()),
+                    if (nowT != null) "▶ " + nowT else catLabel(item.ch.groups.first()),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall,
@@ -270,8 +271,9 @@ fun ChannelListRow(item: ChannelItem, s: AppSettings, actions: ChannelActions, o
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold
                 )
+                val nowT = nowTitle(item, s)
                 Text(
-                    item.ch.groups.joinToString(" · ") { catLabel(it) },
+                    if (nowT != null) "▶ " + nowT else item.ch.groups.joinToString(" · ") { catLabel(it) },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodySmall,

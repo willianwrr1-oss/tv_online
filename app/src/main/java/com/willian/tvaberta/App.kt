@@ -1,6 +1,7 @@
 package com.willian.tvaberta
 
 import android.app.Application
+import com.willian.tvaberta.data.Epg
 import com.willian.tvaberta.data.Repo
 import com.willian.tvaberta.data.SettingsStore
 
@@ -9,5 +10,6 @@ class App : Application() {
         super.onCreate()
         SettingsStore.init(this)
         Repo.init(this)
+        Epg.init(this)
     }
 }

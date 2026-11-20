@@ -83,6 +83,7 @@ import androidx.media3.common.C
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.willian.tvaberta.MainViewModel
+import com.willian.tvaberta.data.Epg
 import com.willian.tvaberta.data.PlayStatus
 import com.willian.tvaberta.data.SettingsStore
 import kotlinx.coroutines.delay
@@ -102,6 +103,17 @@ fun PlayerScreen(vm: MainViewModel) {
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     var overlay by remember { mutableStateOf(true) }
+
+    // Guia: programa no ar e o seguinte, atualizados a cada 30 s.
+    val epgVersion by Epg.version.collectAsState()
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            nowMs = System.currentTimeMillis()
+        }
+    }
+    val nowNext = if (s.epgEnabled) remember(ch.key, nowMs, epgVersion) { Epg.nowNext(ch, nowMs) } else Pair(null, null)
     var tick by remember { mutableIntStateOf(0) }
 
     // Barra de progresso: só aparece em filmes e episódios (conteúdo que não é ao vivo).
@@ -309,6 +321,43 @@ fun PlayerScreen(vm: MainViewModel) {
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.bodySmall
                         )
+                        val cur = nowNext.first
+                        val nxt = nowNext.second
+                        if (cur != null) {
+                            Text(
+                                "Agora: " + cur.title + "  (" + fmtClock(cur.start) + "–" + fmtClock(cur.stop) + ")",
+                                color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            val total = (cur.stop - cur.start).coerceAtLeast(1L)
+                            val frac = ((nowMs - cur.start).toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                            Box(
+                                Modifier
+                                    .padding(vertical = 3.dp)
+                                    .fillMaxWidth(0.6f)
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(Color(0x55FFFFFF))
+                            ) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth(frac)
+                                        .height(3.dp)
+                                        .background(MaterialTheme.colorScheme.primary)
+                                )
+                            }
+                        }
+                        if (nxt != null) {
+                            Text(
+                                "A seguir: " + nxt.title + "  (" + fmtClock(nxt.start) + ")",
+                                color = Color(0xFFD0D6E0),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                     OverlayIcon(
                         if (fav) Icons.Default.Star else Icons.Default.StarBorder,

@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import com.willian.tvaberta.data.Channel
 import com.willian.tvaberta.data.ChannelItem
 import com.willian.tvaberta.data.ChannelState
+import com.willian.tvaberta.data.Epg
 import com.willian.tvaberta.data.Repo
 import com.willian.tvaberta.data.SettingsStore
 import com.willian.tvaberta.player.PlayerController
@@ -70,6 +71,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     play(c, listOf(c))
                 }
             }
+            // Guia de programação: usa o cache na hora e baixa de novo só se estiver velho.
+            val g = SettingsStore.value
+            if (g.epgEnabled) {
+                val urls = Epg.urlList(g.epgUrls)
+                Epg.loadFromCache(urls)
+                val epgLimit = g.epgRefreshHours * 3_600_000L
+                val epgStale = g.epgRefreshHours > 0 && System.currentTimeMillis() - g.lastEpgRefresh > epgLimit
+                val epgMissing = urls.any { !Epg.hasCache(it) }
+                if (epgStale || epgMissing) doRefreshEpg(false)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ guia de programação
+
+    fun refreshEpg(manual: Boolean) {
+        viewModelScope.launch { doRefreshEpg(manual) }
+    }
+
+    private suspend fun doRefreshEpg(manual: Boolean) {
+        val urls = Epg.urlList(SettingsStore.value.epgUrls)
+        if (urls.isEmpty()) {
+            if (manual) toast("Nenhum link de guia configurado. Veja Configurações > Guia de programação.")
+            return
+        }
+        val ok = Epg.refresh(urls)
+        if (ok > 0) {
+            SettingsStore.update { it.copy(lastEpgRefresh = System.currentTimeMillis()) }
+            if (manual) toast("Guia de programação atualizado.")
+        } else if (manual) {
+            toast("Não foi possível baixar o guia. Verifique o link e a conexão.")
         }
     }
 

@@ -1,5 +1,9 @@
 package com.willian.tvaberta.ui
 
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.willian.tvaberta.data.Epg
 import android.app.Activity
 import android.app.PictureInPictureParams
 import android.content.Context
@@ -105,3 +109,16 @@ fun formatDateTime(ms: Long): String {
     if (ms <= 0L) return "nunca"
     return SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("pt", "BR")).format(Date(ms))
 }
+
+
+/** Nome do programa no ar (ou null se não houver guia). Atualiza quando o guia é recarregado. */
+@Composable
+fun nowTitle(item: ChannelItem, s: AppSettings): String? {
+    if (!s.epgEnabled || !s.showNowOnCards) return null
+    val v by Epg.version.collectAsState()
+    @Suppress("UNUSED_EXPRESSION") v
+    return Epg.nowNext(item.ch, System.currentTimeMillis()).first?.title
+}
+
+/** Milissegundos -> "20:30" no fuso do aparelho. */
+fun fmtClock(ms: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
