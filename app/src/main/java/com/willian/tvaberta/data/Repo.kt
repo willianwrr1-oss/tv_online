@@ -149,6 +149,16 @@ object Repo {
 
     fun updateState(key: String, f: (ChannelState) -> ChannelState) = updateStates(listOf(key), f)
 
+    /** Volta a lista de canais ao estado inicial: fontes originais, sem canais manuais e sem escolhas. */
+    fun resetChannelList() {
+        resetSources()
+        manual = emptyList()
+        persistManual()
+        _states.value = emptyMap()
+        persistStates()
+        scope.launch { reload() }
+    }
+
     fun resetHistory() {
         val keys = _states.value.keys.toList()
         updateStates(keys) { it.copy(plays = 0, lastPlayed = 0L) }

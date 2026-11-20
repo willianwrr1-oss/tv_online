@@ -302,6 +302,7 @@ private fun SourcesPage(vm: MainViewModel) {
     val sources by Repo.sources.collectAsState()
     val refreshing by Repo.refreshing.collectAsState()
     var pickCountry by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
     var customDialog by remember { mutableStateOf(false) }
 
     SimpleScroll {
@@ -357,6 +358,10 @@ private fun SourcesPage(vm: MainViewModel) {
                 vm.refresh(true)
             }
             RowDivider()
+            ActionRow("Resetar lista de canais", "Volta tudo ao inicial: só as fontes originais, sem canais importados nem escolhas", danger = true) {
+                confirmReset = true
+            }
+            RowDivider()
             ActionRow("Importar arquivo M3U do celular", "Escolha o arquivo; canais que você já tem são ignorados") {
                 filePicker.launch(arrayOf("*/*"))
             }
@@ -378,6 +383,28 @@ private fun SourcesPage(vm: MainViewModel) {
         )
     }
 
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Resetar a lista de canais?") },
+            text = {
+                Text(
+                    "Volta ao inicial: só as quatro fontes originais (IPTV-org, CatTV, PublicDomainM3U filmes e séries). " +
+                        "Apaga os canais que você importou ou adicionou, e também favoritos, canais desativados, " +
+                        "excluídos, renomeados e grupos que você mudou."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmReset = false
+                    Repo.resetChannelList()
+                    vm.refresh(true)
+                    vm.toast("Lista de canais resetada.")
+                }) { Text("Resetar", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancelar") } }
+        )
+    }
     if (pickCountry) {
         AlertDialog(
             onDismissRequest = { pickCountry = false },
