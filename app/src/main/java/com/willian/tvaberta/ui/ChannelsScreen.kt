@@ -1,0 +1,196 @@
+package com.willian.tvaberta.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.dp
+import com.willian.tvaberta.MainViewModel
+import com.willian.tvaberta.data.ChannelItem
+import com.willian.tvaberta.data.Repo
+import com.willian.tvaberta.data.SettingsStore
+
+@Composable
+fun rememberActions(vm: MainViewModel): ChannelActions {
+    val clip = LocalClipboardManager.current
+    return remember(vm, clip) {
+        ChannelActions(
+            toggleFavorite = { vm.toggleFavorite(it.ch.key) },
+            disable = { vm.setDisabled(listOf(it.ch.key), true) },
+            enable = { vm.setDisabled(listOf(it.ch.key), false) },
+            delete = { vm.requestDelete(listOf(it.ch.key)) },
+            rename = { vm.renameTarget = it },
+            copyLink = {
+                clip.setText(AnnotatedString(it.ch.urls.first()))
+                vm.toast("Link copiado.")
+            },
+        )
+    }
+}
+
+@Composable
+fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
+    val all by vm.items.collectAsState()
+    val s by SettingsStore.flow.collectAsState()
+    val query by vm.query.collectAsState()
+    val category by vm.category.collectAsState()
+    val refreshing by Repo.refreshing.collectAsState()
+    val actions = rememberActions(vm)
+
+    val base = remember(all, s) {
+        val listed = all.filter { isListed(it, s) }
+        if (favoritesOnly) listed.filter { it.st.favorite } else listed
+    }
+    val cats = remember(base) { categoriesOf(base) }
+    val cat = category?.takeIf { it in cats }
+    val visible: List<ChannelItem> = remember(base, query, cat, s.sortMode) {
+        val q = query.trim()
+        val filtered = base.filter { item ->
+            (cat == null || cat in item.ch.groups) &&
+                (q.isEmpty() || item.title.contains(q, ignoreCase = true))
+        }
+        sortItems(filtered, s.sortMode)
+    }
+    val queue = remember(visible) { visible.map { it.ch } }
+
+    Column(Modifier.fillMaxSize()) {
+        ScreenHeader(
+            title = if (favoritesOnly) "Favoritos" else "TV Aberta",
+            subtitle = if (visible.size == 1) "1 canal" else "${visible.size} canais",
+        ) {
+            IconButton(onClick = { SettingsStore.update { it.copy(gridLayout = !it.gridLayout) } }) {
+                Icon(
+                    if (s.gridLayout) Icons.Default.ViewList else Icons.Default.GridView,
+                    contentDescription = "Alternar entre grade e lista"
+                )
+            }
+            IconButton(onClick = { vm.refresh(true) }) {
+                Icon(Icons.Default.Refresh, contentDescription = "Atualizar lista de canais")
+            }
+        }
+        if (refreshing) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+
+        OutlinedTextField(
+            value = query,
+            onValueChange = { vm.query.value = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            singleLine = true,
+            shape = RoundedCornerShape(28.dp),
+            placeholder = { Text("Buscar canal") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            trailingIcon = {
+                if (query.isNotEmpty()) {
+                    IconButton(onClick = { vm.query.value = "" }) {
+                        Icon(Icons.Default.Close, contentDescription = "Limpar busca")
+                    }
+                }
+            }
+        )
+
+        if (s.showCategoryChips && cats.size > 1) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = cat == null,
+                        onClick = { vm.category.value = null },
+                        label = { Text("Todos") }
+                    )
+                }
+                items(cats, key = { it }) { c ->
+                    FilterChip(
+                        selected = cat == c,
+                        onClick = { vm.category.value = if (cat == c) null else c },
+                        label = { Text(catLabel(c)) }
+                    )
+                }
+            }
+        }
+
+        when {
+            visible.isNotEmpty() && s.gridLayout -> {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(s.gridColumns.coerceIn(2, 4)),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(visible, key = { it.ch.key }) { item ->
+                        ChannelGridCard(item, s, actions) { vm.play(item.ch, queue) }
+                    }
+                }
+            }
+            visible.isNotEmpty() -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (s.compactList) 6.dp else 10.dp)
+                ) {
+                    items(visible, key = { it.ch.key }) { item ->
+                        ChannelListRow(item, s, actions) { vm.play(item.ch, queue) }
+                    }
+                }
+            }
+            favoritesOnly && all.isNotEmpty() && query.isBlank() -> {
+                EmptyState(
+                    icon = Icons.Default.Star,
+                    title = "Nenhum favorito ainda",
+                    text = "Abra o menu ⋮ de um canal e toque em Favoritar para vê-lo aqui."
+                )
+            }
+            all.isEmpty() -> {
+                EmptyState(
+                    icon = Icons.Default.LiveTv,
+                    title = if (refreshing) "Carregando canais…" else "Nenhum canal carregado",
+                    text = "Baixe a lista de canais abertos para começar. Precisa de internet.",
+                    actionLabel = if (refreshing) null else "Atualizar lista",
+                    onAction = { vm.refresh(true) }
+                )
+            }
+            else -> {
+                EmptyState(
+                    icon = Icons.Default.Search,
+                    title = "Nenhum canal encontrado",
+                    text = "Mude a busca ou a categoria. Canais desativados ou excluídos ficam em Gerenciar."
+                )
+            }
+        }
+    }
+}
