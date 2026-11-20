@@ -353,8 +353,9 @@ private fun SourcesPage(vm: MainViewModel) {
             RowDivider()
             ActionRow("Adicionar lista M3U por link", "Uma lista sua ou de outra fonte pública") { customDialog = true }
             RowDivider()
-            ActionRow("Restaurar fontes originais", "Volta só para IPTV-org, CatTV e PublicDomainM3U (filmes e séries)") {
+            ActionRow("Restaurar fontes originais", "Volta às quatro fontes originais e traz de volta os canais excluídos e desativados") {
                 Repo.resetSources()
+                Repo.restoreAllChannels()
                 vm.refresh(true)
             }
             RowDivider()

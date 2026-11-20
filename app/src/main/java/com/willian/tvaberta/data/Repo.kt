@@ -216,6 +216,12 @@ object Repo {
         persistSources()
     }
 
+    /** Traz de volta todos os canais excluídos ou desativados (não mexe em favoritos nem em nomes). */
+    fun restoreAllChannels() {
+        val keys = _states.value.filter { it.value.deleted || it.value.disabled }.keys.toList()
+        updateStates(keys) { it.copy(deleted = false, disabled = false) }
+    }
+
     /** Volta a lista de fontes para as quatro originais; apaga as listas baixadas das outras. */
     fun resetSources() {
         val keep = DefaultSources.list.map { it.id }.toSet()
