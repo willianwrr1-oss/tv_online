@@ -265,6 +265,8 @@ private fun ChannelsPage(vm: MainViewModel) {
                 SettingsStore.update { it.copy(confirmDelete = v) }
             }
             RowDivider()
+            ActionRow("Excluir canais duplicados", "Mantém um de cada (mesmo nome ou link). Dá para desfazer") { vm.removeDuplicates() }
+            RowDivider()
             ActionRow("Restaurar todos os canais excluídos", "Os canais voltam para a lista") { confirmRestore = true }
             RowDivider()
             ActionRow("Reativar todos os canais desativados") {
@@ -294,6 +296,9 @@ private fun ChannelsPage(vm: MainViewModel) {
 
 @Composable
 private fun SourcesPage(vm: MainViewModel) {
+    val filePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) vm.importM3u(uri) }
     val sources by Repo.sources.collectAsState()
     val refreshing by Repo.refreshing.collectAsState()
     var pickCountry by remember { mutableStateOf(false) }
@@ -346,6 +351,10 @@ private fun SourcesPage(vm: MainViewModel) {
             }
             RowDivider()
             ActionRow("Adicionar lista M3U por link", "Uma lista sua ou de outra fonte pública") { customDialog = true }
+            RowDivider()
+            ActionRow("Importar arquivo M3U do celular", "Escolha o arquivo; canais que você já tem são ignorados") {
+                filePicker.launch(arrayOf("*/*"))
+            }
         }
         SettingsSection("Atualização") {
             ActionRow(

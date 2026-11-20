@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -99,6 +100,9 @@ fun ManageScreen(vm: MainViewModel) {
                 title = "Gerenciar canais",
                 subtitle = "Desative para esconder ou exclua para remover de vez"
             ) {
+                IconButton(onClick = { vm.removeDuplicates() }) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Excluir canais duplicados")
+                }
                 IconButton(onClick = { picker.launch(arrayOf("*/*")) }) {
                     Icon(Icons.Default.FolderOpen, contentDescription = "Importar arquivo M3U")
                 }

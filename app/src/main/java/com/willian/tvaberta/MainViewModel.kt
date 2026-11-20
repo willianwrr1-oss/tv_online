@@ -183,6 +183,60 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Acha canais repetidos (mesmo nome ou mesmo link) e exclui as cópias, deixando um de cada.
+     * Fica o favorito, depois o ativo, depois o mais assistido. Dá para desfazer.
+     */
+    fun removeDuplicates() {
+        val list = items.value.filter { !it.st.deleted }
+        val parent = IntArray(list.size) { it }
+        fun find(x: Int): Int {
+            var r = x
+            while (parent[r] != r) r = parent[r]
+            var c = x
+            while (parent[c] != r) {
+                val n = parent[c]
+                parent[c] = r
+                c = n
+            }
+            return r
+        }
+        val byName = HashMap<String, Int>()
+        val byUrl = HashMap<String, Int>()
+        for ((i, ci) in list.withIndex()) {
+            val nk = Repo.norm(ci.title)
+            if (nk.isNotEmpty()) {
+                val j = byName[nk]
+                if (j == null) byName[nk] = i else parent[find(i)] = find(j)
+            }
+            for (u in ci.ch.urls) {
+                val uk = Repo.normUrl(u)
+                val j = byUrl[uk]
+                if (j == null) byUrl[uk] = i else parent[find(i)] = find(j)
+            }
+        }
+        val groups = HashMap<Int, MutableList<ChannelItem>>()
+        for (i in list.indices) groups.getOrPut(find(i)) { mutableListOf() }.add(list[i])
+        val toDelete = ArrayList<String>()
+        for (g in groups.values) {
+            if (g.size < 2) continue
+            val best = g.sortedWith(
+                compareByDescending<ChannelItem> { it.st.favorite }
+                    .thenBy { it.st.disabled }
+                    .thenByDescending { it.st.plays }
+                    .thenByDescending { it.ch.urls.size }
+            ).first()
+            for (c in g) if (c.ch.key != best.ch.key) toDelete.add(c.ch.key)
+        }
+        if (toDelete.isEmpty()) {
+            toast("Nenhum canal duplicado encontrado.")
+            return
+        }
+        Repo.updateStates(toDelete) { it.copy(deleted = true, favorite = false) }
+        val msg = if (toDelete.size == 1) "1 canal duplicado excluído." else toDelete.size.toString() + " canais duplicados excluídos."
+        events.tryEmit(UiEvent(msg, "Desfazer") { restore(toDelete, false) })
+    }
+
     fun rename(key: String, name: String) {
         Repo.updateState(key) { it.copy(customName = name.trim().ifEmpty { null }) }
     }

@@ -115,8 +115,8 @@ fun formatDateTime(ms: Long): String {
 @Composable
 fun nowTitle(item: ChannelItem, s: AppSettings): String? {
     if (!s.epgEnabled || !s.showNowOnCards) return null
-    val v by Epg.version.collectAsState()
-    @Suppress("UNUSED_EXPRESSION") v
+    val v = Epg.version.collectAsState().value
+    if (v < 0) return null
     return Epg.nowNext(item.ch, System.currentTimeMillis()).first?.title
 }
 

@@ -293,12 +293,12 @@ object Repo {
     }
 
     /** Importa um arquivo M3U do aparelho como canais manuais. Devolve quantos canais novos entraram. */
-    private fun norm(s: String): String =
+    fun norm(s: String): String =
         java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
             .replace(Regex("\\p{M}+"), "")
             .replace(Regex("[^a-z0-9]+"), "")
 
-    private fun normUrl(u: String): String =
+    fun normUrl(u: String): String =
         u.trim().lowercase().removePrefix("https://").removePrefix("http://").trimEnd('/')
 
     /**
