@@ -293,16 +293,51 @@ object Repo {
     }
 
     /** Importa um arquivo M3U do aparelho como canais manuais. Devolve quantos canais novos entraram. */
-    fun importM3u(text: String): Int {
+    private fun norm(s: String): String =
+        java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+            .replace(Regex("[^a-z0-9]+"), "")
+
+    private fun normUrl(u: String): String =
+        u.trim().lowercase().removePrefix("https://").removePrefix("http://").trimEnd('/')
+
+    /**
+     * Importa uma lista M3U ignorando o que o app já tem (mesmo tvg-id, mesmo nome ou mesmo link,
+     * em qualquer fonte, ativa ou não). Devolve (novos, ignorados).
+     */
+    fun importM3u(text: String): Pair<Int, Int> {
         val parsed = M3uParser.parse(text, "manual", keyPrefix = "m:")
-        val existing = manual.map { it.key }.toSet()
-        val add = parsed.filter { it.key !in existing }
+        val have = _channels.value + manual
+        val names = HashSet<String>()
+        val ids = HashSet<String>()
+        val urls = HashSet<String>()
+        for (c in have) {
+            names.add(norm(c.name))
+            if (c.key.contains("id:")) ids.add(c.key.substringAfter("id:").lowercase())
+            for (u in c.urls) urls.add(normUrl(u))
+        }
+        val add = ArrayList<Channel>()
+        var skipped = 0
+        for (c in parsed) {
+            val id = if (c.key.contains("id:")) c.key.substringAfter("id:").lowercase() else null
+            val dup = norm(c.name) in names ||
+                (id != null && id in ids) ||
+                c.urls.any { normUrl(it) in urls }
+            if (dup) {
+                skipped++
+            } else {
+                add.add(c)
+                names.add(norm(c.name))
+                if (id != null) ids.add(id)
+                for (u in c.urls) urls.add(normUrl(u))
+            }
+        }
         if (add.isNotEmpty()) {
             manual = manual + add
             persistManual()
             scope.launch { reload() }
         }
-        return add.size
+        return Pair(add.size, skipped)
     }
 
     private fun persistManual() {

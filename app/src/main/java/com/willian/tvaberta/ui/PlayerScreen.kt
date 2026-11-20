@@ -85,6 +85,7 @@ import androidx.media3.ui.PlayerView
 import com.willian.tvaberta.MainViewModel
 import com.willian.tvaberta.data.Epg
 import com.willian.tvaberta.data.PlayStatus
+import com.willian.tvaberta.data.Programme
 import com.willian.tvaberta.data.SettingsStore
 import kotlinx.coroutines.delay
 
@@ -113,7 +114,7 @@ fun PlayerScreen(vm: MainViewModel) {
             nowMs = System.currentTimeMillis()
         }
     }
-    val nowNext = if (s.epgEnabled) remember(ch.key, nowMs, epgVersion) { Epg.nowNext(ch, nowMs) } else Pair(null, null)
+    val nowNext: Pair<Programme?, Programme?> = if (s.epgEnabled) remember(ch.key, nowMs, epgVersion) { Epg.nowNext(ch, nowMs) } else Pair(null, null)
     var tick by remember { mutableIntStateOf(0) }
 
     // Barra de progresso: só aparece em filmes e episódios (conteúdo que não é ao vivo).

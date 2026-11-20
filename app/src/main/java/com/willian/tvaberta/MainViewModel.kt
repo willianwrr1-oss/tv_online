@@ -194,19 +194,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importM3u(uri: Uri) {
         viewModelScope.launch {
-            val added = withContext(Dispatchers.IO) {
+            val res: Pair<Int, Int>? = withContext(Dispatchers.IO) {
                 try {
                     val text = getApplication<Application>().contentResolver
                         .openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    if (text == null) -1 else Repo.importM3u(text)
+                    if (text == null) null else Repo.importM3u(text)
                 } catch (e: Exception) {
-                    -1
+                    null
                 }
             }
-            when {
-                added < 0 -> toast("Não foi possível ler o arquivo.")
-                added == 0 -> toast("Nenhum canal novo encontrado no arquivo.")
-                else -> toast("$added canais importados.")
+            if (res == null) {
+                toast("Não foi possível ler o arquivo.")
+            } else if (res.first == 0) {
+                toast("Nenhum canal novo: " + res.second + " já existiam.")
+            } else {
+                toast(res.first.toString() + " canais novos importados, " + res.second + " ignorados (já existiam).")
             }
         }
     }
