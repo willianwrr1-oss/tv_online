@@ -273,8 +273,13 @@ class PlayerController(private val app: Application) {
         PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
         PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
         PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ->
-            "O formato de vídeo deste canal não é compatível."
-        else -> "Não foi possível reproduzir este canal agora."
+            "O formato deste canal não é compatível: o link não entrega um vídeo válido (costuma ser link antigo que saiu do ar, página da web ou formato como RTMP/FLV). [" + e.errorCodeName + "]"
+        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ->
+            "Este aparelho não consegue decodificar o vídeo ou o áudio deste canal (codec não suportado). [" + e.errorCodeName + "]"
+        else -> "Não foi possível reproduzir este canal agora. [" + e.errorCodeName + "]"
     }
 
     private fun refreshStatus() {
