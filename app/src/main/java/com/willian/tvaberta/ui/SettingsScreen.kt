@@ -304,8 +304,15 @@ private fun SourcesPage(vm: MainViewModel) {
     var pickCountry by remember { mutableStateOf(false) }
     var confirmResetList by remember { mutableStateOf(false) }
     var customDialog by remember { mutableStateOf(false) }
+    var packsOpen by remember { mutableStateOf(false) }
+    if (packsOpen) PacksDialog(vm) { packsOpen = false }
 
     SimpleScroll {
+        SettingsSection("Pacotes") {
+            ActionRow("Ver pacotes e excluir", "Cada lista por link e cada arquivo importado: veja os canais e exclua o pacote todo") {
+                packsOpen = true
+            }
+        }
         SettingsSection("Listas ativas") {
             if (sources.isEmpty()) {
                 Text(

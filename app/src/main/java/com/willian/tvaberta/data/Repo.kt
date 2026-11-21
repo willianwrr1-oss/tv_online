@@ -18,6 +18,12 @@ import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
+/** Arquivo M3U importado: guarda quais canais vieram dele, para poder excluir o pacote todo. */
+data class ImportPack(val id: String, val name: String, val keys: List<String>, val time: Long)
+
+/** Pacote exibido na tela: uma fonte (link/país), um arquivo importado ou "meus canais". */
+data class PackInfo(val id: String, val name: String, val kind: String, val channels: List<Channel>, val time: Long)
+
 /**
  * Guarda tudo o que o app sabe sobre canais: as listas baixadas (cache em arquivos), as escolhas do
  * usuário (desativar, excluir, favoritar, renomear) e os canais adicionados à mão.
@@ -40,6 +46,9 @@ object Repo {
 
     private var manual: List<Channel> = emptyList()
 
+    private val _packs = MutableStateFlow<List<ImportPack>>(emptyList())
+    val packs: StateFlow<List<ImportPack>> = _packs
+
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
@@ -54,6 +63,7 @@ object Repo {
         if (sourcesDirty) persistSources()
         _states.value = loadStates()
         manual = loadManual()
+        _packs.value = loadPacks()
     }
 
     private fun listsDir(): File {
@@ -154,6 +164,8 @@ object Repo {
         resetSources()
         manual = emptyList()
         persistManual()
+        _packs.value = emptyList()
+        persistPacks()
         _states.value = emptyMap()
         persistStates()
         scope.launch { reload() }
@@ -367,10 +379,98 @@ object Repo {
         }
         if (add.isNotEmpty()) {
             manual = manual + add
+            _packs.value = _packs.value + ImportPack(
+                id = System.currentTimeMillis().toString(),
+                name = listName,
+                keys = add.map { it.key },
+                time = System.currentTimeMillis()
+            )
+            persistPacks()
             persistManual()
             scope.launch { reload() }
         }
         return Pair(add.size, skipped)
+    }
+
+    private fun persistPacks() {
+        val snap = _packs.value
+        scope.launch {
+            synchronized(this@Repo) {
+                val arr = JSONArray()
+                for (p in snap) {
+                    val o = JSONObject()
+                    o.put("id", p.id)
+                    o.put("name", p.name)
+                    o.put("time", p.time)
+                    o.put("keys", JSONArray(p.keys))
+                    arr.put(o)
+                }
+                writeAtomic(File(ctx.filesDir, "packs.json"), arr.toString())
+            }
+        }
+    }
+
+    private fun loadPacks(): List<ImportPack> {
+        val f = File(ctx.filesDir, "packs.json")
+        if (!f.exists()) return emptyList()
+        return try {
+            val arr = JSONArray(f.readText())
+            val list = ArrayList<ImportPack>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val ka = o.optJSONArray("keys")
+                val keys = ArrayList<String>()
+                if (ka != null) for (j in 0 until ka.length()) keys.add(ka.getString(j))
+                list.add(ImportPack(o.getString("id"), o.optString("name", "Importado"), keys, o.optLong("time", 0L)))
+            }
+            list
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** Todos os pacotes de canais: fontes (link/país), arquivos importados e os canais "à mão". */
+    fun packInfos(): List<PackInfo> {
+        val st = _states.value
+        fun alive(list: List<Channel>) = list.filter { st[it.key]?.deleted != true }
+        val out = ArrayList<PackInfo>()
+        for (src in _sources.value) {
+            out.add(PackInfo("src:" + src.id, src.name, "source", alive(_channels.value.filter { it.sourceId == src.id }), 0L))
+        }
+        val packed = HashSet<String>()
+        for (p in _packs.value) {
+            val ks = p.keys.toSet()
+            packed.addAll(ks)
+            out.add(PackInfo("pk:" + p.id, p.name, "file", alive(manual.filter { it.key in ks }), p.time))
+        }
+        val rest = manual.filter { it.key !in packed }
+        if (rest.isNotEmpty()) {
+            out.add(PackInfo("rest", "Meus canais (à mão ou importados antes)", "rest", alive(rest), 0L))
+        }
+        return out
+    }
+
+    /** Exclui o pacote inteiro de uma vez. Fonte: remove a fonte. Arquivo: apaga os canais dele. */
+    fun deletePack(info: PackInfo) {
+        if (info.kind == "source") {
+            removeSource(info.id.removePrefix("src:"))
+            return
+        }
+        val kill: Set<String>
+        if (info.kind == "file") {
+            val p = _packs.value.firstOrNull { "pk:" + it.id == info.id } ?: return
+            kill = p.keys.toSet()
+            _packs.value = _packs.value - p
+            persistPacks()
+        } else {
+            val packed = _packs.value.flatMap { it.keys }.toSet()
+            kill = manual.filter { it.key !in packed }.map { it.key }.toSet()
+        }
+        manual = manual.filter { it.key !in kill }
+        persistManual()
+        _states.value = _states.value.filterKeys { it !in kill }
+        persistStates()
+        scope.launch { reload() }
     }
 
     private fun persistManual() {
