@@ -2,6 +2,7 @@ package com.willian.tvaberta.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +22,17 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,6 +78,8 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
     val category by vm.category.collectAsState()
     val refreshing by Repo.refreshing.collectAsState()
     val actions = rememberActions(vm)
+    var catMenu by remember { mutableStateOf<String?>(null) }
+    var originMenu by remember { mutableStateOf<String?>(null) }
 
     val origin by vm.origin.collectAsState()
     val baseAll = remember(all, s) {
@@ -142,11 +156,13 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
                     )
                 }
                 items(origins, key = { it }) { o ->
-                    FilterChip(
-                        selected = org == o,
-                        onClick = { vm.origin.value = if (org == o) null else o },
-                        label = { Text(Repo.originName(o)) }
-                    )
+                    LongPressBox(onClick = { vm.origin.value = if (org == o) null else o }, onLong = { originMenu = o }) {
+                        FilterChip(
+                            selected = org == o,
+                            onClick = { vm.origin.value = if (org == o) null else o },
+                            label = { Text(Repo.originName(o)) }
+                        )
+                    }
                 }
             }
         }
@@ -164,13 +180,66 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
                     )
                 }
                 items(cats, key = { it }) { c ->
-                    FilterChip(
-                        selected = cat == c,
-                        onClick = { vm.category.value = if (cat == c) null else c },
-                        label = { Text(catLabel(c)) }
-                    )
+                    LongPressBox(onClick = { vm.category.value = if (cat == c) null else c }, onLong = { catMenu = c }) {
+                        FilterChip(
+                            selected = cat == c,
+                            onClick = { vm.category.value = if (cat == c) null else c },
+                            label = { Text(catLabel(c)) }
+                        )
+                    }
                 }
             }
+        }
+
+        val om = originMenu
+        if (om != null) {
+            val keys = baseAll.filter { it.ch.sourceId == om }.map { it.ch.key }
+            AlertDialog(
+                onDismissRequest = { originMenu = null },
+                title = { Text(Repo.originName(om)) },
+                text = { Text(keys.size.toString() + " canais nesta lista, de todas as categorias.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.requestDelete(keys)
+                        if (vm.origin.value == om) vm.origin.value = null
+                        originMenu = null
+                    }) { Text("Excluir os " + keys.size, color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = { originMenu = null }) { Text("Cancelar") }
+                        TextButton(onClick = {
+                            vm.setDisabled(keys, true)
+                            originMenu = null
+                        }) { Text("Desativar") }
+                    }
+                }
+            )
+        }
+        val cm = catMenu
+        if (cm != null) {
+            val keys = base.filter { cm in it.ch.groups }.map { it.ch.key }
+            AlertDialog(
+                onDismissRequest = { catMenu = null },
+                title = { Text(catLabel(cm)) },
+                text = { Text(keys.size.toString() + " canais nesta categoria" + if (org != null) " (na lista escolhida)." else ".") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.requestDelete(keys)
+                        if (vm.category.value == cm) vm.category.value = null
+                        catMenu = null
+                    }) { Text("Excluir os " + keys.size, color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = { catMenu = null }) { Text("Cancelar") }
+                        TextButton(onClick = {
+                            vm.setDisabled(keys, true)
+                            catMenu = null
+                        }) { Text("Desativar") }
+                    }
+                }
+            )
         }
 
         when {
@@ -222,5 +291,28 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
                 )
             }
         }
+    }
+}
+
+/** Envolve um chip e detecta o toque longo por cima dele (o chip sozinho consome o toque). */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LongPressBox(onClick: () -> Unit, onLong: () -> Unit, content: @Composable () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Box {
+        content()
+        Box(
+            Modifier
+                .matchParentSize()
+                .combinedClickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick,
+                    onLongClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onLong()
+                    }
+                )
+        )
     }
 }
