@@ -472,13 +472,14 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 2) {
 
     fun favCount(f: Flt): Int {
         val a = ArrayList<String>()
-        val w = where(f, a)
+        val w = where(Flt(false, false, f.src, f.q, f.kind), a)
         return scalar("SELECT COUNT(*) $fromS WHERE $w AND s.f=1", a)
     }
 
     fun favorites(f: Flt, sortMode: Int, limit: Int): List<Channel> {
         val a = ArrayList<String>()
-        val w = where(f, a)
+        // Favorito é escolha do usuário: não some por causa dos filtros "ocultar bloqueados por região / fora do ar 24h".
+        val w = where(Flt(false, false, f.src, f.q, f.kind), a)
         return list("SELECT $cols $fromS WHERE $w AND s.f=1 ORDER BY ${order(sortMode)} LIMIT $limit", a)
     }
 

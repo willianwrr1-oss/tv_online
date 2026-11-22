@@ -483,6 +483,16 @@ private fun DataPage(vm: MainViewModel) {
     val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) vm.restoreFrom { ctx.contentResolver.openInputStream(uri) } }
+    var showDiag by remember { mutableStateOf(false) }
+    val diagText by Repo.diag.collectAsState()
+    if (showDiag) {
+        AlertDialog(
+            onDismissRequest = { showDiag = false },
+            title = { Text("Diagnóstico da lista") },
+            text = { Text(diagText.ifBlank { "Nada registrado ainda." }, style = MaterialTheme.typography.bodySmall) },
+            confirmButton = { TextButton(onClick = { showDiag = false }) { Text("Fechar") } }
+        )
+    }
     SimpleScroll {
         SettingsSection("Backup") {
             ActionRow("Exportar backup", "Salva num arquivo suas fontes, favoritos, excluídos, nomes e canais importados") {
@@ -494,6 +504,8 @@ private fun DataPage(vm: MainViewModel) {
             }
         }
         SettingsSection("Cache") {
+            ActionRow("Diagnóstico da lista", "Mostra o que o app encontrou ao abrir") { showDiag = true }
+            RowDivider()
             ActionRow("Limpar cache de logos", "Libera espaço; os logos são baixados de novo quando precisar") {
                 ctx.imageLoader.memoryCache?.clear()
                 ctx.imageLoader.diskCache?.clear()

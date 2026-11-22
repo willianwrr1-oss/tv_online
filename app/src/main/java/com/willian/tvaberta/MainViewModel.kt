@@ -293,8 +293,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val stale = s.autoRefreshHours > 0 && System.currentTimeMillis() - s.lastRefresh > limit
             val missing = Repo.sources.value.any { it.enabled && !Repo.hasCache(it.id) }
             val empty = withContext(Dispatchers.IO) { Repo.db.count() == 0 }
+            Repo.note("Ao abrir: vazio=" + empty + ", lista velha=" + stale + ", sem cópia=" + missing)
             if (empty || stale || missing) {
+                Repo.note("Atualização automática iniciada")
                 doRefresh(false)
+                Repo.note("Atualização automática terminou: " + withContext(Dispatchers.IO) { Repo.db.count() } + " canais no banco")
             }
             if (s.reopenLast && s.lastChannelKey.isNotEmpty() && player.current == null) {
                 val c = withContext(Dispatchers.IO) { Repo.byKey(s.lastChannelKey) }

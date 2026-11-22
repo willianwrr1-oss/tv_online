@@ -98,6 +98,14 @@ object Repo {
             .build()
     }
 
+    /** Registro curto do que o app encontrou ao abrir e do que fez (aparece em Ajustes > Cache > Diagnóstico). */
+    val diag = MutableStateFlow("")
+
+    fun note(msg: String) {
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        diag.update { (it + t + "  " + msg + "\n").takeLast(4000) }
+    }
+
     fun init(c: Context) {
         ctx = c.applicationContext
         _sources.value = loadSources()
@@ -148,6 +156,12 @@ object Repo {
                     }
                 }
                 _states.value = db.loadStates()
+                try {
+                    note("Banco aberto: " + db.count() + " canais, arquivo de " + (ctx.getDatabasePath("channels.db").length() / 1024) +
+                        " KB. Fontes: " + _sources.value.size + ", com cópia salva: " + _sources.value.count { hasCache(it.id) })
+                } catch (e: Exception) {
+                    note("Banco aberto, mas a contagem falhou: " + e.message)
+                }
             }
             loaded = true
             _ready.value = true
@@ -355,6 +369,7 @@ object Repo {
                         throw e
                     } catch (e: Exception) {
                         fail++
+                        note("Falha ao atualizar " + src.name + ": " + (e.message ?: e.javaClass.simpleName))
                     } finally {
                         if (tmp.exists()) tmp.delete()
                     }
