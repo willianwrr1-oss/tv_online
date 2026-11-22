@@ -71,7 +71,6 @@ class PlayerController(private val app: Application) {
         current = ch
         urlIndex = 0
         retryCount = 0
-        altUrl = null
         errorText = null
         val s = SettingsStore.value
         muted = s.startMuted
@@ -226,40 +225,19 @@ class PlayerController(private val app: Application) {
             http.setDefaultRequestProperties(mapOf("Referer" to ref))
         }
 
-        // Analisa o caminho, não a URL inteira: tokens e parâmetros de autenticação
-        // podem aparecer depois da extensão (?token=...), sem alterar o formato real.
-        val uri = android.net.Uri.parse(url)
-        val scheme = uri.scheme?.lowercase().orEmpty()
-        val path = uri.path?.lowercase().orEmpty()
+        val lower = url.lowercase()
         val builder = MediaItem.Builder().setUri(url)
         val flip = altUrl == url
-
-        when {
-            // RTSP é detectado automaticamente pelo DefaultMediaSourceFactory
-            // quando a dependência media3-exoplayer-rtsp está presente.
-            scheme == "rtsp" -> Unit
-
-            path.endsWith(".mpd") ->
-                builder.setMimeType(MimeTypes.APPLICATION_MPD)
-
-            // Microsoft Smooth Streaming: /arquivo.ism/manifest
-            path.endsWith(".ism/manifest") || path.endsWith(".isml/manifest") ||
-                path.endsWith(".ismc") ->
-                builder.setMimeType(MimeTypes.APPLICATION_SS)
-
-            else -> {
-                // URLs sem extensão podem ser HLS ou MPEG-TS direto.
-                // Mantém a tentativa alternativa em caso de erro de parsing.
-                val progressiveExtensions = listOf(
-                    ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".ts", ".m2ts", ".mts",
-                    ".mp3", ".aac", ".m4a", ".wav", ".flac", ".ogg", ".opus",
-                    ".ac3", ".ec3", ".amr", ".flv", ".mpeg", ".mpg"
-                )
-                val isKnownProgressive = progressiveExtensions.any { path.endsWith(it) }
-                val guessHls = path.endsWith(".m3u8") || !isKnownProgressive
-                val hls = if (flip) !guessHls else guessHls
-                if (hls) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
-            }
+        if (lower.contains(".mpd")) {
+            builder.setMimeType(MimeTypes.APPLICATION_MPD)
+        } else {
+            // Links sem extensão (comuns em listas com usuário e senha) podem ser HLS ou TS direto:
+            // tenta o palpite pela URL e, se der erro de formato, tenta o outro jeito (veja handleError).
+            val guessHls = lower.contains("m3u8") ||
+                !(lower.endsWith(".mp4") || lower.endsWith(".ts") || lower.endsWith(".mp3") ||
+                    lower.endsWith(".aac") || lower.endsWith(".mkv") || lower.endsWith(".flv"))
+            val hls = if (flip) !guessHls else guessHls
+            if (hls) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
         }
         val source = DefaultMediaSourceFactory(http).createMediaSource(builder.build())
         p.setMediaSource(source)

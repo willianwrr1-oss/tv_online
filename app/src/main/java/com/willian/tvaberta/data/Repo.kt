@@ -4,7 +4,10 @@ import android.content.Context
 import android.util.JsonReader
 import android.util.JsonToken
 import android.util.JsonWriter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +42,21 @@ data class PackInfo(val id: String, val name: String, val kind: String, val coun
  * em arquivos de cache.
  */
 object Repo {
+    private const val MAX_M3U_BYTES = 512L * 1024L * 1024L
+
+    /** Copia em fluxo, limitando o tamanho para evitar consumo excessivo de armazenamento. */
+    private fun copyLimited(input: InputStream, output: OutputStream, maxBytes: Long) {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) throw IOException("Arquivo M3U excede o limite de 512 MB")
+            output.write(buffer, 0, n)
+        }
+        output.flush()
+    }
     private lateinit var ctx: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val dbExec = Executors.newSingleThreadExecutor()
@@ -251,14 +269,22 @@ object Repo {
     /** Lê um arquivo M3U de uma fonte para dentro do banco (troca o que havia dessa fonte). */
     private fun importSourceFile(id: String, f: File) {
         synchronized(wlock) {
-            f.bufferedReader().use { r ->
-                db.inTx {
-                    db.deleteSrc(id)
-                    M3uParser.parseLines(r.lineSequence(), id, "") { c -> db.put(c, null, true) }
-                    db.reapplyCustomGroups()
+            var parsed = 0
+            try {
+                f.bufferedReader().use { r ->
+                    db.inTx {
+                        db.deleteSrc(id)
+                        M3uParser.parseLines(r.lineSequence(), id, "") { c ->
+                            parsed++
+                            db.put(c, null, true)
+                        }
+                        if (parsed == 0) throw IOException("A lista M3U não contém canais válidos")
+                        db.reapplyCustomGroups()
+                    }
                 }
+            } finally {
+                db.releaseStatements()
             }
-            db.releaseStatements()
         }
     }
 
@@ -291,37 +317,46 @@ object Repo {
             ensureLoaded()
             withContext(Dispatchers.IO) {
                 for (src in _sources.value) {
+                    currentCoroutineContext().ensureActive()
                     if (!src.enabled) continue
+                    val tmp = File(listsDir(), src.id + ".tmp")
                     try {
                         val req = Request.Builder()
                             .url(src.url)
                             .header("User-Agent", "TVAberta/1.0")
                             .build()
-                        val target = File(listsDir(), src.id + ".m3u")
-                        val tmp = File(listsDir(), src.id + ".tmp")
                         client.newCall(req).execute().use { r ->
                             if (!r.isSuccessful) throw IOException("HTTP " + r.code)
                             val body = r.body ?: throw IOException("vazio")
-                            body.byteStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+                            val length = body.contentLength()
+                            if (length > MAX_M3U_BYTES) throw IOException("Arquivo M3U excede o limite de 512 MB")
+                            body.byteStream().use { input ->
+                                tmp.outputStream().use { output -> copyLimited(input, output, MAX_M3U_BYTES) }
+                            }
                         }
                         val head = tmp.bufferedReader().use { r ->
                             val buf = CharArray(4000)
                             val n = r.read(buf)
                             if (n > 0) String(buf, 0, n) else ""
                         }
-                        if (!head.contains("#EXTM3U")) {
-                            tmp.delete()
-                            throw IOException("não é uma lista M3U")
-                        }
+                        if (!head.contains("#EXTM3U")) throw IOException("não é uma lista M3U")
+
+                        currentCoroutineContext().ensureActive()
+                        // Importa o temporário antes de substituir o cache anterior.
+                        importSourceFile(src.id, tmp)
+                        val target = File(listsDir(), src.id + ".m3u")
                         if (!tmp.renameTo(target)) {
                             tmp.copyTo(target, overwrite = true)
                             tmp.delete()
                         }
-                        importSourceFile(src.id, target)
                         bumpData()
                         ok++
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         fail++
+                    } finally {
+                        if (tmp.exists()) tmp.delete()
                     }
                 }
             }

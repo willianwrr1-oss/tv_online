@@ -53,14 +53,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val category = MutableStateFlow<String?>(null)
     val origin = MutableStateFlow<String?>(null)
 
+    val catListState = androidx.compose.foundation.lazy.LazyListState()
+    val originListState = androidx.compose.foundation.lazy.LazyListState()
     var tab by mutableIntStateOf(0)
-    var settingsPage by mutableStateOf<String?>(null)
-    var inPip by mutableStateOf(false)
+    var lastFocusKey by mutableStateOf<String?>(null)
+    var focusPending by mutableStateOf(true)
     var fullscreen by mutableStateOf(false)
     var previewMode by mutableStateOf(false)
     var liveGroup by mutableStateOf<String?>(null)
     var liveSub by mutableStateOf<String?>(null)
     var area by mutableStateOf<Int?>(null)
+    var settingsPage by mutableStateOf<String?>(null)
+    var inPip by mutableStateOf(false)
     var renameTarget by mutableStateOf<ChannelItem?>(null)
     var pendingDelete by mutableStateOf<List<String>>(emptyList())
 
@@ -330,9 +334,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ok = Epg.refresh(urls)
         if (ok > 0) {
             SettingsStore.update { it.copy(lastEpgRefresh = System.currentTimeMillis()) }
-            if (manual) toast("Guia de programação atualizado.")
+            if (manual) {
+                val n = withContext(Dispatchers.Default) {
+                    var c = 0
+                    Repo.db.forEachLive(Repo.flt(SettingsStore.value)) { ch ->
+                        if (Epg.programmes(ch).isNotEmpty()) c++
+                        true
+                    }
+                    c
+                }
+                if (n > 0) toast("Guia atualizado: " + n + " canais com programação.")
+                else toast("Guia baixado, mas nenhum dos seus canais consta nele. Troque o link em Ajustes > Guia.")
+            }
         } else if (manual) {
-            toast("Não foi possível baixar o guia. Verifique o link e a conexão.")
+            toast("Não foi possível baixar o guia (" + (Epg.lastError ?: "sem detalhe") + ").")
         }
     }
 
@@ -555,6 +570,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     Repo.ensureLoaded()
                     val ins = cr.openInputStream(uri)
                     if (ins == null) null else Repo.importM3u(ins.reader(Charsets.UTF_8), name)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (res == null) {
+                toast("Não foi possível ler o arquivo.")
+            } else if (res.first == 0) {
+                toast("Nenhum canal novo: " + res.second + " já existiam.")
+            } else {
+                toast(res.first.toString() + " canais novos importados, " + res.second + " ignorados (já existiam).")
+            }
+        }
+    }
+
+    /** Importa um arquivo M3U escolhido no navegador de pastas do próprio app. */
+    fun importM3uFile(file: java.io.File) {
+        viewModelScope.launch {
+            val res: Pair<Int, Int>? = withContext(Dispatchers.IO) {
+                try {
+                    Repo.importM3u(file.reader(Charsets.UTF_8), file.nameWithoutExtension)
                 } catch (e: Exception) {
                     null
                 }

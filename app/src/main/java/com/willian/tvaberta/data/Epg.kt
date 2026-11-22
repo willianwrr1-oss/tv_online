@@ -2,6 +2,7 @@ package com.willian.tvaberta.data
 
 import android.content.Context
 import android.util.Xml
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,6 +13,7 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -34,6 +36,22 @@ data class Programme(
  * (sem o sufixo @SD/@HD) e, se não achar, pelo nome do canal.
  */
 object Epg {
+    private const val MAX_EPG_BYTES = 512L * 1024L * 1024L
+
+    /** Copia o download em blocos, sem manter o arquivo inteiro na memória. */
+    private fun copyLimited(input: InputStream, output: OutputStream, maxBytes: Long) {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) throw IOException("Arquivo EPG excede o limite de 512 MB")
+            output.write(buffer, 0, n)
+        }
+        output.flush()
+    }
+
     // O link antigo (iptv-com/epg) saiu do ar (HTTP 404). Hoje: guia do Brasil do epgshare01 e, de reserva, o BrazilTVEPG.
     const val OLD_DEAD_MARK = "iptv-com/epg"
     const val DEFAULT_URL = "https://epgshare01.online/epgshare01/epg_ripper_BR1.xml.gz\n" +
@@ -41,6 +59,10 @@ object Epg {
     const val SUGGESTED_URL = "https://iptv-epg.org/files/epg-br.xml"
 
     private lateinit var ctx: Context
+
+    /** Motivo da última falha de download, para mostrar ao usuário. */
+    @Volatile
+    var lastError: String? = null
 
     private val _version = MutableStateFlow(0)
     val version: StateFlow<Int> = _version
@@ -99,24 +121,30 @@ object Epg {
         try {
             withContext(Dispatchers.IO) {
                 for (u in urls) {
+                    val tmp = File(dir(), "download.tmp")
                     try {
                         val req = Request.Builder().url(u).header("User-Agent", "TVAberta/1.0").build()
                         client.newCall(req).execute().use { r ->
                             if (!r.isSuccessful) throw IOException("HTTP " + r.code)
                             val body = r.body ?: throw IOException("vazio")
-                            val tmp = File(dir(), "download.tmp")
+                            val length = body.contentLength()
+                            if (length > MAX_EPG_BYTES) throw IOException("Arquivo EPG excede o limite de 512 MB")
                             body.byteStream().use { input ->
-                                tmp.outputStream().use { out -> input.copyTo(out) }
-                            }
-                            val target = fileFor(u)
-                            if (!tmp.renameTo(target)) {
-                                tmp.copyTo(target, overwrite = true)
-                                tmp.delete()
+                                tmp.outputStream().use { out -> copyLimited(input, out, MAX_EPG_BYTES) }
                             }
                         }
+                        val target = fileFor(u)
+                        if (!tmp.renameTo(target)) {
+                            tmp.copyTo(target, overwrite = true)
+                            tmp.delete()
+                        }
                         ok++
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
-                        // este guia falhou; os outros continuam
+                        lastError = (e.message ?: e.javaClass.simpleName)
+                    } finally {
+                        if (tmp.exists()) tmp.delete()
                     }
                 }
             }
