@@ -13,6 +13,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -29,6 +31,10 @@ data class PackInfo(val id: String, val name: String, val kind: String, val chan
  * usuário (desativar, excluir, favoritar, renomear) e os canais adicionados à mão.
  */
 object Repo {
+    /** Proteção contra respostas acidentais gigantes ou downloads sem limite. Ajustável conforme necessidade. */
+    private const val MAX_LIST_BYTES = 256L * 1024L * 1024L
+    private const val COPY_BUFFER_SIZE = 64 * 1024
+
     private lateinit var ctx: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -81,7 +87,9 @@ object Repo {
             val f = File(listsDir(), src.id + ".m3u")
             if (!f.exists()) continue
             val parsed = try {
-                M3uParser.parse(f.readText(), src.id)
+                f.bufferedReader(Charsets.UTF_8).use { reader ->
+                    M3uParser.parse(reader, src.id)
+                }
             } catch (e: Exception) {
                 emptyList()
             }
@@ -117,9 +125,47 @@ object Repo {
                             .build()
                         client.newCall(req).execute().use { r ->
                             if (!r.isSuccessful) throw IOException("HTTP " + r.code)
-                            val body = r.body?.string() ?: throw IOException("vazio")
-                            if (!body.contains("#EXTM3U")) throw IOException("não é uma lista M3U")
-                            File(listsDir(), src.id + ".m3u").writeText(body)
+                            val body = r.body ?: throw IOException("vazio")
+                            val declaredLength = body.contentLength()
+                            if (declaredLength > MAX_LIST_BYTES) {
+                                throw IOException("Lista excede o limite de ${MAX_LIST_BYTES / (1024 * 1024)} MB")
+                            }
+
+                            val target = File(listsDir(), src.id + ".m3u")
+                            val temp = File(listsDir(), src.id + ".m3u.tmp")
+                            var total = 0L
+                            try {
+                                BufferedInputStream(body.byteStream()).use { input ->
+                                    BufferedOutputStream(temp.outputStream(), COPY_BUFFER_SIZE).use { output ->
+                                        val buffer = ByteArray(COPY_BUFFER_SIZE)
+                                        while (true) {
+                                            val read = input.read(buffer)
+                                            if (read < 0) break
+                                            total += read
+                                            if (total > MAX_LIST_BYTES) {
+                                                throw IOException("Lista excede o limite de ${MAX_LIST_BYTES / (1024 * 1024)} MB")
+                                            }
+                                            output.write(buffer, 0, read)
+                                        }
+                                    }
+                                }
+
+                                // Valida o arquivo temporário antes de substituir o cache anterior.
+                                val validM3u = temp.bufferedReader(Charsets.UTF_8).use { reader ->
+                                    val first = CharArray(8192)
+                                    val count = reader.read(first)
+                                    count > 0 && String(first, 0, count).contains("#EXTM3U", ignoreCase = true)
+                                }
+                                if (!validM3u) throw IOException("não é uma lista M3U")
+
+                                if (!temp.renameTo(target)) {
+                                    temp.copyTo(target, overwrite = true)
+                                    temp.delete()
+                                }
+                            } catch (e: Exception) {
+                                temp.delete()
+                                throw e
+                            }
                         }
                         ok++
                     } catch (e: Exception) {
