@@ -1,29 +1,54 @@
-# TV Aberta — versão Android TV / Mi Box
+# TV Aberta
 
-Mesma base do app de celular (canais, fontes, guia de programação, desativar/excluir), com tela feita para **controle remoto**.
-Pacote `com.willian.tvaberta.tv` (pode ficar instalado junto com o app de celular). Android 8.0 ou superior, Mi Box S e similares.
+Aplicativo Android para assistir a canais de TV abertos e gratuitos.
+Versão para **celular** (Android 8.0 ou superior). A versão para Android TV / Mi Box virá depois.
 
-## Como gerar o APK (só pelo navegador, no GitHub)
-1. Crie um repositório novo (por exemplo `tvaberta-tv`) e envie **todo o conteúdo** desta pasta (Add file > Upload files). A pasta `.github/workflows` precisa subir junto; se o upload não mostrar a pasta oculta, crie o arquivo `.github/workflows/build-apk.yml` com Add file > Create new file e cole o conteúdo.
-2. Aba **Actions** > "Gerar APK" > Run workflow (ou aguarde o push).
-3. Ao terminar, em **Artifacts** baixe **TvAbertaTV** (dentro vem `TvAbertaTV.apk`).
+- **Pacote:** `com.willian.tvaberta`
+- **Compatibilidade:** minSdk 26 (Android 8.0), targetSdk 34
+- **Compilação:** só pelo GitHub Actions, usando a interface web do GitHub (sem terminal)
 
-## Como instalar na TV / Mi Box
-- Coloque o APK num pendrive e instale com um gerenciador de arquivos (ative "Fontes desconhecidas"), ou use o app "Send Files to TV" / "Downloader" para baixar pelo link.
+## O que o app faz
 
-## Controle remoto
-**Menu lateral e telas**
-- Setas movem o foco (borda branca); **OK** abre/aciona; **Voltar** sobe um nível.
-- **Segurar OK** (ou tecla **Menu**) sobre um canal: favoritar, renomear, desativar, excluir.
-- Passar pelo menu lateral troca a tela; **→** entra no conteúdo.
+- Já vem com 4 fontes cadastradas (Configurações > Fontes): **IPTV-org – Brasil** (ligada), **CatTV Playlist – Brasil** (desligada: mistura canais públicos com marcas de TV paga retransmitidas por terceiros; ligue por sua conta), **PublicDomainM3U – Filmes** (filmes de domínio público, ligada) e **PublicDomainM3U – Séries** (ligada). Dá para adicionar outros países, os canais em português de todos os países ou uma lista própria por link.
+- Filmes e séries têm barra de progresso para avançar e voltar; canais ao vivo não.
+- Player com Media3 (ExoPlayer): HLS, DASH e outros; tenta links de reserva e reconecta sozinho quando o canal cai.
+- **Desativar** (esconde, mas dá para reativar) e **excluir** (some de vez e não volta nas atualizações; dá para restaurar em Gerenciar > Excluídos), um a um pelo menu ⋮ ou em lote na aba Gerenciar. Excluir e desativar têm "Desfazer".
+- Favoritos, busca, filtro por categoria, ordenação (nome, mais assistidos, recentes), grade ou lista.
+- Adicionar canal manualmente e importar arquivo M3U do aparelho.
+- Player em tela cheia: trocar de canal (botões ou deslizar), proporção da imagem, girar tela, imagem em imagem (PiP), mudo.
+- Mais de 25 configurações (aparência, reprodução, canais, fontes, dados e cache).
 
-**Assistindo**
-- **▲ / ▼** (ou CH+ / CH-): próximo / canal anterior.
-- **OK**: abre o menu (anterior, próximo, pausar, favoritar, mudo, tela, desativar, excluir). **Menu** abre e fecha.
-- **◀ / ▶**: em filmes e séries voltam/avançam 10 s; em canais ao vivo mostram as informações.
-- **Play/Pause**, **Next/Previous** do controle funcionam. **Voltar** fecha o menu e, depois, o player.
-- Aparecem o nome do programa no ar e o seguinte (guia).
+## Como gerar o APK (só pelo site do GitHub)
 
-## Observações
-- Digitar texto (busca, links) na TV é lento; o app aceita o teclado da TV ou a voz do controle quando houver.
-- Código entregue sem compilação local; se o Actions ficar vermelho, mande as linhas `e: ` do log.
+1. Crie um repositório novo no GitHub (por exemplo `tv-aberta`), na branch `main`.
+2. Descompacte o ZIP e envie **todos** os arquivos e pastas para o repositório (Add file > Upload files). Atenção: a pasta `.github` é oculta e às vezes o navegador não a envia ao arrastar. Se a aba **Actions** não mostrar o fluxo "Gerar APK", crie o arquivo pela opção **Add file > Create new file**, digitando `.github/workflows/build-apk.yml` no nome, e cole o conteúdo do arquivo do ZIP.
+3. Abra a aba **Actions**. O fluxo **Gerar APK** roda sozinho a cada envio (ou clique em Run workflow).
+4. Quando ficar verde, abra a execução e baixe o artefato **TvAberta** (dentro vem o TvAberta.apk). Dentro vem o `.apk`; instale no celular.
+5. Se ficar vermelho, copie as linhas que começam com `e: ` (erro de Kotlin), `What went wrong:` ou `Could not resolve` e envie para correção.
+
+## Assinatura (importante)
+
+O arquivo `app/tvaberta.jks` é a chave fixa do app. **Nunca troque nem apague.** Com ela, cada novo APK instala por cima do anterior sem perder dados. O `versionCode` sobe sozinho a cada execução do Actions.
+
+## Estrutura
+
+```
+app/src/main/java/com/willian/tvaberta/
+  App.kt, MainActivity.kt, MainViewModel.kt
+  data/    Models, SettingsStore, M3uParser, Repo
+  player/  PlayerController (ExoPlayer)
+  ui/      Theme, Util, Components, ChannelsScreen, ManageScreen,
+           SettingsScreen, PlayerScreen, AppRoot
+```
+
+## Aviso
+
+O app é só um reprodutor: não hospeda nem transmite canais. Use apenas fontes legais. Listas que oferecem canais pagos de graça costumam ser pirataria.
+
+## Guia de programação (v1.2.0)
+
+- **No player:** aparece "Agora: nome do programa (início–fim)", barra de progresso e "A seguir".
+- **Aba Guia:** grade com canais nas linhas e horários nas colunas (rola para os lados); tocar num programa abre o canal.
+- **Canais:** o nome do programa no ar aparece nos cartões e na lista (pode desligar em Ajustes > Guia de programação).
+- **Ajustes > Guia de programação:** ligar/desligar, atualização automática, links do guia (XMLTV, um por linha), limpar cache.
+- Link padrão: `https://raw.githubusercontent.com/iptv-com/epg/main/guides/brazil.xml`. O guia é ligado ao canal pelo `tvg-id` ou, se não achar, pelo nome. Nem todo canal terá programação.

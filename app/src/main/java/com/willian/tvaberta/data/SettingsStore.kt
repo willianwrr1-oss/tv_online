@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.update
 
 data class AppSettings(
     // Aparência
-    val theme: Int = 2,               // 0 sistema, 1 claro, 2 escuro
+    val theme: Int = 0,               // 0 sistema, 1 claro, 2 escuro
     val accent: Int = 0,
     val pureBlack: Boolean = false,
     val gridLayout: Boolean = true,
@@ -22,14 +22,14 @@ data class AppSettings(
     val maxQuality: Int = 0,          // 0 auto, 1 1080p, 2 720p, 3 480p, 4 360p
     val bufferMode: Int = 1,          // 0 baixa latência, 1 equilibrado, 2 estável
     val keepScreenOn: Boolean = true,
-    val pipOnLeave: Boolean = false,
+    val pipOnLeave: Boolean = true,
     val landscapeOnPlay: Boolean = false,
     val startMuted: Boolean = false,
     val autoFallback: Boolean = true,
     val retries: Int = 2,
     val blockMobile: Boolean = false,
-    val overlaySeconds: Int = 6,
-    val swipeZap: Boolean = false,
+    val overlaySeconds: Int = 5,
+    val swipeZap: Boolean = true,
     val reopenLast: Boolean = false,
     // Canais
     val sortMode: Int = 0,            // 0 nome, 1 ordem original, 2 mais assistidos, 3 recentes
