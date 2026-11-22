@@ -22,6 +22,7 @@ import com.willian.tvaberta.ui.LiveHead
 import com.willian.tvaberta.ui.LiveModel
 import com.willian.tvaberta.ui.buildLiveHead
 import com.willian.tvaberta.ui.catLabel
+import com.willian.tvaberta.ui.seasonLabel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
