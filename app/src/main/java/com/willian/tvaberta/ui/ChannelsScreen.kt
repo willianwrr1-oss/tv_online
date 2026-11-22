@@ -72,7 +72,6 @@ fun rememberActions(vm: MainViewModel): ChannelActions {
 
 @Composable
 fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
-    val all by vm.items.collectAsState()
     val s by SettingsStore.flow.collectAsState()
     val query by vm.query.collectAsState()
     val category by vm.category.collectAsState()
@@ -82,10 +81,7 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
     var originMenu by remember { mutableStateOf<String?>(null) }
 
     val origin by vm.origin.collectAsState()
-    val baseAll = remember(all, s) {
-        val listed = all.filter { isListed(it, s) }
-        if (favoritesOnly) listed.filter { it.st.favorite } else listed
-    }
+    val baseAll by vm.favorites.collectAsState()
     val origins = remember(baseAll) {
         baseAll.map { it.ch.sourceId }.distinct().sortedBy { Repo.originName(it).lowercase() }
     }
@@ -95,13 +91,8 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
     }
     val cats = remember(base) { categoriesOf(base) }
     val cat = category?.takeIf { it in cats }
-    val visible: List<ChannelItem> = remember(base, query, cat, s.sortMode) {
-        val q = query.trim()
-        val filtered = base.filter { item ->
-            (cat == null || cat in item.ch.groups) &&
-                (q.isEmpty() || item.title.contains(q, ignoreCase = true))
-        }
-        sortItems(filtered, s.sortMode)
+    val visible: List<ChannelItem> = remember(base, cat) {
+        if (cat == null) base else base.filter { cat in it.ch.groups }
     }
     val queue = remember(visible) { visible.map { it.ch } }
 
@@ -267,20 +258,11 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
                     }
                 }
             }
-            favoritesOnly && all.isNotEmpty() && query.isBlank() -> {
+            baseAll.isEmpty() && query.isBlank() -> {
                 EmptyState(
                     icon = Icons.Default.Star,
                     title = "Nenhum favorito ainda",
                     text = "Abra o menu ⋮ de um canal e toque em Favoritar para vê-lo aqui."
-                )
-            }
-            all.isEmpty() -> {
-                EmptyState(
-                    icon = Icons.Default.LiveTv,
-                    title = if (refreshing) "Carregando canais…" else "Nenhum canal carregado",
-                    text = "Baixe a lista de canais abertos para começar. Precisa de internet.",
-                    actionLabel = if (refreshing) null else "Atualizar lista",
-                    onAction = { vm.refresh(true) }
                 )
             }
             else -> {

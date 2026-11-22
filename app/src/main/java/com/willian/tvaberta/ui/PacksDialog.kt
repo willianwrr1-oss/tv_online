@@ -13,6 +13,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -20,8 +21,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.willian.tvaberta.MainViewModel
+import com.willian.tvaberta.data.Channel
 import com.willian.tvaberta.data.PackInfo
 import com.willian.tvaberta.data.Repo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 fun packSubtitle(p: PackInfo): String {
     val kind = when (p.kind) {
@@ -29,7 +33,7 @@ fun packSubtitle(p: PackInfo): String {
         "file" -> "arquivo importado em " + formatDateTime(p.time)
         else -> "canais seus"
     }
-    return p.channels.size.toString() + " canais · " + kind
+    return p.count.toString() + " canais · " + kind
 }
 
 /** Lista os pacotes (listas por link e arquivos importados); toque num pacote para ver os canais e excluir. */
@@ -37,11 +41,17 @@ fun packSubtitle(p: PackInfo): String {
 fun PacksDialog(vm: MainViewModel, onClose: () -> Unit) {
     val sources by Repo.sources.collectAsState()
     val packsState by Repo.packs.collectAsState()
-    val chans by Repo.channels.collectAsState()
-    val infos = remember(sources, packsState, chans) { Repo.packInfos() }
+    val dataV by Repo.dataVersion.collectAsState()
+    val infos by produceState(emptyList<PackInfo>(), sources, packsState, dataV) {
+        value = withContext(Dispatchers.IO) { Repo.packInfos() }
+    }
     var sel by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf(false) }
     val cur = infos.firstOrNull { it.id == sel }
+    val chList by produceState(emptyList<Channel>(), cur?.id) {
+        val c = cur
+        value = if (c == null) emptyList() else withContext(Dispatchers.IO) { Repo.packChannels(c, 300) }
+    }
 
     if (cur == null) {
         AlertDialog(
@@ -94,7 +104,7 @@ fun PacksDialog(vm: MainViewModel, onClose: () -> Unit) {
                         )
                     }
                     LazyColumn(Modifier.heightIn(max = 300.dp).padding(top = 8.dp)) {
-                        items(cur.channels, key = { it.key }) { c ->
+                        items(chList, key = { it.key }) { c ->
                             Text(c.name, Modifier.padding(vertical = 4.dp), style = MaterialTheme.typography.bodyMedium)
                         }
                     }

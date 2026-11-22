@@ -13,7 +13,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -21,12 +21,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.willian.tvaberta.MainViewModel
+import com.willian.tvaberta.data.Flt
+import com.willian.tvaberta.data.Repo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Escolhe para qual grupo mover os canais selecionados (ou cria um grupo novo). */
 @Composable
 fun MoveGroupDialog(vm: MainViewModel, keys: List<String>, onDone: () -> Unit) {
-    val all by vm.items.collectAsState()
-    val groups = remember(all) { categoriesOf(all.filter { !it.st.deleted }) }
+    val groups by produceState(emptyList<String>()) {
+        value = withContext(Dispatchers.IO) {
+            Repo.db.groupCounts(Flt()).map { it.grp }.sortedBy { catLabel(it).lowercase() }
+        }
+    }
     var newName by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDone,

@@ -52,6 +52,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -267,7 +268,7 @@ private fun GroupsPane(
                     item(key = "h:" + g.id) {
                         GroupHeader(
                             label = g.label,
-                            count = g.items.size,
+                            count = g.count,
                             expanded = open == g.id,
                             onClick = { vm.liveGroup = if (open == g.id) null else g.id },
                             onLong = { if (g.isCategory) menuGroup = g.id }
@@ -290,6 +291,14 @@ private fun GroupsPane(
                                 }
                             }
                         }
+                        if (g.hasMore) {
+                            item(key = "more:" + g.id) {
+                                LaunchedEffect(g.items.size) { vm.loadMoreGroup() }
+                                Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -298,7 +307,7 @@ private fun GroupsPane(
 
     val mg = groups.firstOrNull { it.id == menuGroup }
     if (mg != null) {
-        val keys = mg.items.map { it.ch.key }
+        val keys by produceState(emptyList<String>(), mg.id) { value = vm.keysOfGroup(mg.id) }
         AlertDialog(
             onDismissRequest = { menuGroup = null },
             title = { Text(mg.label) },

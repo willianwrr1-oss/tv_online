@@ -56,7 +56,7 @@ private val NAME_W = 92.dp
 @Composable
 fun GuideScreen(vm: MainViewModel) {
     val s by SettingsStore.flow.collectAsState()
-    val all by vm.items.collectAsState()
+    val dataV by Repo.dataVersion.collectAsState()
     val version by Epg.version.collectAsState()
     val loading by Epg.loading.collectAsState()
 
@@ -69,11 +69,18 @@ fun GuideScreen(vm: MainViewModel) {
     val end = start + WINDOW_MIN * 60_000L
 
     val rows by produceState(
-        emptyList<ChannelItem>(), all, version, s.hideGeoBlocked, s.hideNot247, s.epgEnabled
+        emptyList<ChannelItem>(), dataV, version, s.hideGeoBlocked, s.hideNot247, s.epgEnabled
     ) {
         value = withContext(Dispatchers.Default) {
             if (!s.epgEnabled) emptyList()
-            else sortByTitle(all.filter { isListed(it, s) && Epg.programmes(it.ch).isNotEmpty() })
+            else {
+                val out = ArrayList<ChannelItem>()
+                Repo.db.forEachLive(Repo.flt(s)) { ch ->
+                    if (Epg.programmes(ch).isNotEmpty()) out.add(Repo.item(ch))
+                    out.size < 800
+                }
+                out
+            }
         }
     }
     val queue: List<Channel> = remember(rows) { rows.map { it.ch } }

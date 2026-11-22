@@ -270,7 +270,7 @@ private fun ChannelsPage(vm: MainViewModel) {
             ActionRow("Restaurar todos os canais excluídos", "Os canais voltam para a lista") { confirmRestore = true }
             RowDivider()
             ActionRow("Reativar todos os canais desativados") {
-                val keys = vm.items.value.filter { it.st.disabled && !it.st.deleted }.map { it.ch.key }
+                val keys = Repo.states.value.filter { it.value.disabled && !it.value.deleted }.keys.toList()
                 if (keys.isEmpty()) vm.toast("Nenhum canal desativado.") else vm.setDisabled(keys, false, withUndo = false)
             }
         }
@@ -282,7 +282,7 @@ private fun ChannelsPage(vm: MainViewModel) {
             text = { Text("Todos os canais que você excluiu voltam para a lista.") },
             confirmButton = {
                 TextButton(onClick = {
-                    val keys = vm.items.value.filter { it.st.deleted }.map { it.ch.key }
+                    val keys = Repo.states.value.filter { it.value.deleted }.keys.toList()
                     confirmRestore = false
                     if (keys.isEmpty()) vm.toast("Nenhum canal excluído.") else vm.restore(keys)
                 }) { Text("Restaurar") }
@@ -477,7 +477,22 @@ private fun SourcesPage(vm: MainViewModel) {
 private fun DataPage(vm: MainViewModel) {
     val ctx = LocalContext.current
     var confirmReset by remember { mutableStateOf(false) }
+    val exportLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri -> if (uri != null) vm.backupTo { ctx.contentResolver.openOutputStream(uri) } }
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) vm.restoreFrom { ctx.contentResolver.openInputStream(uri) } }
     SimpleScroll {
+        SettingsSection("Backup") {
+            ActionRow("Exportar backup", "Salva num arquivo suas fontes, favoritos, excluídos, nomes e canais importados") {
+                exportLauncher.launch("backup-tvaberta.json")
+            }
+            RowDivider()
+            ActionRow("Restaurar backup", "Escolha um arquivo de backup; ele substitui suas escolhas atuais") {
+                importLauncher.launch(arrayOf("*/*"))
+            }
+        }
         SettingsSection("Cache") {
             ActionRow("Limpar cache de logos", "Libera espaço; os logos são baixados de novo quando precisar") {
                 ctx.imageLoader.memoryCache?.clear()

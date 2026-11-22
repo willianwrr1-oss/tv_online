@@ -6,15 +6,22 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.willian.tvaberta.data.Channel
 import com.willian.tvaberta.data.ChannelItem
+import com.willian.tvaberta.data.Flt
 import com.willian.tvaberta.data.ChannelState
 import com.willian.tvaberta.data.Epg
 import com.willian.tvaberta.data.Repo
 import com.willian.tvaberta.data.SettingsStore
 import com.willian.tvaberta.player.PlayerController
+import com.willian.tvaberta.ui.LiveGroup
+import com.willian.tvaberta.ui.LiveHead
+import com.willian.tvaberta.ui.LiveModel
+import com.willian.tvaberta.ui.buildLiveHead
+import com.willian.tvaberta.ui.catLabel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +29,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -37,66 +47,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val player = PlayerController(app)
 
-    // Lista de canais + escolhas do usuário. Quando só as escolhas mudam (favoritar, tocar um canal),
-    // refaz apenas os itens afetados em vez de recriar dezenas de milhares de objetos.
-    private var prevChs: List<Channel>? = null
-    private var prevSts: Map<String, ChannelState> = emptyMap()
-    private var prevItems: List<ChannelItem> = emptyList()
-    private var posByKey: HashMap<String, Int> = HashMap()
-
-    private fun makeItem(ch: Channel, st: ChannelState): ChannelItem {
-        val g = st.customGroup
-        return ChannelItem(if (g != null) ch.copy(groups = listOf(g)) else ch, st)
-    }
-
-    val items: StateFlow<List<ChannelItem>> =
-        combine(Repo.channels, Repo.states) { chs, sts ->
-            val sameChannels = chs === prevChs && prevItems.size == chs.size
-            val out: List<ChannelItem>
-            if (sameChannels) {
-                val changed = HashSet<String>()
-                for ((k, v) in sts) if (prevSts[k] != v) changed.add(k)
-                for (k in prevSts.keys) if (!sts.containsKey(k)) changed.add(k)
-                if (changed.isEmpty()) {
-                    out = prevItems
-                } else {
-                    val copy = ArrayList(prevItems)
-                    for (k in changed) {
-                        val pos = posByKey[k] ?: continue
-                        copy[pos] = makeItem(chs[pos], sts[k] ?: ChannelState())
-                    }
-                    out = copy
-                }
-            } else {
-                val pos = HashMap<String, Int>(chs.size * 2)
-                val list = ArrayList<ChannelItem>(chs.size)
-                for ((i, ch) in chs.withIndex()) {
-                    pos[ch.key] = i
-                    list.add(makeItem(ch, sts[ch.key] ?: ChannelState()))
-                }
-                posByKey = pos
-                out = list
-            }
-            prevChs = chs
-            prevSts = sts
-            prevItems = out
-            out
-        }
-            .flowOn(Dispatchers.Default)
-            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
     val query = MutableStateFlow("")
     val category = MutableStateFlow<String?>(null)
     val origin = MutableStateFlow<String?>(null)
-
-    /** Grupos da tela de TV ao vivo, montados em segundo plano; a busca espera a pessoa parar de digitar. */
-    @OptIn(kotlinx.coroutines.FlowPreview::class)
-    val liveModel: StateFlow<com.willian.tvaberta.ui.LiveModel> =
-        combine(items, SettingsStore.flow, query.debounce(200), origin) { all, st, q, o ->
-            com.willian.tvaberta.ui.buildLiveModel(all, st, q, o)
-        }
-            .flowOn(Dispatchers.Default)
-            .stateIn(viewModelScope, SharingStarted.Eagerly, com.willian.tvaberta.ui.LiveModel.EMPTY)
 
     var tab by mutableIntStateOf(0)
     var settingsPage by mutableStateOf<String?>(null)
@@ -107,20 +60,150 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var renameTarget by mutableStateOf<ChannelItem?>(null)
     var pendingDelete by mutableStateOf<List<String>>(emptyList())
 
+    private class LiveKey(val hideGeo: Boolean, val hideN247: Boolean, val sortMode: Int)
+
+    private class LiveParams(val ready: Boolean, val key: LiveKey, val q: String, val org: String?)
+
+    private class OpenPage(val id: String?, val items: List<com.willian.tvaberta.data.Channel>, val more: Boolean)
+
+    private val pageSize = 300
+    private val groupLimit = MutableStateFlow<Pair<String?, Int>>(Pair(null, pageSize))
+
+    private val liveKey = SettingsStore.flow
+        .map { LiveKey(it.hideGeoBlocked, it.hideNot247, it.sortMode) }
+        .distinctUntilChanged { a, b -> a.hideGeo == b.hideGeo && a.hideN247 == b.hideN247 && a.sortMode == b.sortMode }
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private val liveParams = combine(Repo.ready, Repo.dataVersion, liveKey, query.debounce(200), origin) { r, _, k, q, o ->
+        LiveParams(r, k, q.trim(), o)
+    }
+
+    private fun fltOf(p: LiveParams, src: String?): Flt =
+        Flt(hideGeo = p.key.hideGeo, hideN247 = p.key.hideN247, src = src, q = p.q.ifEmpty { null })
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val liveHead: StateFlow<LiveHead?> = liveParams
+        .mapLatest { p ->
+            if (!p.ready) null
+            else withContext(Dispatchers.Default) { buildLiveHead(SettingsStore.value, p.q, p.org) }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Favoritos e recentes (atalhos no topo da lista). */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val liveLight: StateFlow<Pair<List<com.willian.tvaberta.data.Channel>, List<com.willian.tvaberta.data.Channel>>?> =
+        combine(liveParams, Repo.stateVersion) { p, _ -> p }
+            .mapLatest { p ->
+                if (!p.ready) null
+                else withContext(Dispatchers.Default) {
+                    val f = fltOf(p, p.org)
+                    Pair(Repo.db.favorites(f, p.key.sortMode, 500), Repo.db.recents(f, 20))
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Canais do grupo aberto, em páginas (cada rolagem até o fim pede a próxima). */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val openPage: StateFlow<OpenPage?> =
+        combine(liveParams, snapshotFlow { liveGroup }, groupLimit) { p, g, lim -> Triple(p, g, lim) }
+            .mapLatest { (p, g, lim) ->
+                if (!p.ready || g == null || !g.startsWith("c:")) {
+                    OpenPage(g, emptyList(), false)
+                } else withContext(Dispatchers.Default) {
+                    val limit = if (lim.first == g) lim.second else pageSize
+                    val f = fltOf(p, p.org)
+                    val list = Repo.db.channelsInGroup(f, g.removePrefix("c:"), p.key.sortMode, limit + 1, 0)
+                    OpenPage(g, if (list.size > limit) list.subList(0, limit) else list, list.size > limit)
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Grupos da tela de TV ao vivo, montados em segundo plano a partir do banco. */
+    val liveModel: StateFlow<LiveModel> =
+        combine(liveHead, liveLight, openPage, Repo.states) { h, l, o, st ->
+            if (h == null) {
+                LiveModel.EMPTY
+            } else {
+                val groups = ArrayList<LiveGroup>(h.cats.size + 2)
+                val favs = l?.first ?: emptyList()
+                if (favs.isNotEmpty()) groups.add(LiveGroup("fav", "Favoritos", favs.size, favs.map { Repo.item(it, st) }, false))
+                val recents = l?.second ?: emptyList()
+                if (recents.isNotEmpty()) {
+                    groups.add(LiveGroup("rec", "Assistidos recentemente", recents.size, recents.map { Repo.item(it, st) }, false))
+                }
+                for (c in h.cats) {
+                    val id = "c:" + c.grp
+                    val open = o != null && o.id == id
+                    groups.add(
+                        LiveGroup(
+                            id, catLabel(c.grp), c.n,
+                            if (open) o!!.items.map { Repo.item(it, st) } else emptyList(),
+                            true, open && o!!.more
+                        )
+                    )
+                }
+                LiveModel(groups, h.total, h.origins, h.org, true)
+            }
+        }
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, LiveModel.EMPTY)
+
+    /** Pede a próxima página do grupo aberto. */
+    fun loadMoreGroup() {
+        val g = liveGroup ?: return
+        val cur = groupLimit.value
+        val base = if (cur.first == g) cur.second else pageSize
+        groupLimit.value = Pair(g, base + pageSize)
+    }
+
+    /** Favoritos (lista completa da aba Favoritos), já com busca e ordem. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val favorites: StateFlow<List<ChannelItem>> =
+        combine(liveParams, Repo.stateVersion) { p, _ -> p }
+            .mapLatest { p ->
+                if (!p.ready) emptyList()
+                else withContext(Dispatchers.Default) {
+                    Repo.db.favorites(fltOf(p, null), p.key.sortMode, 3000).map { Repo.item(it) }
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    private fun currentFlt(src: String?): Flt {
+        val s = SettingsStore.value
+        return Repo.flt(s, src, query.value.trim().ifEmpty { null })
+    }
+
+    /** Chaves de todos os canais de um grupo da lista ao vivo (respeita busca e lista de origem). */
+    suspend fun keysOfGroup(id: String): List<String> = withContext(Dispatchers.IO) {
+        val f = currentFlt(origin.value)
+        when {
+            id == "fav" -> Repo.db.favorites(f, 0, 100000).map { it.key }
+            id == "rec" -> Repo.db.recents(f, 20).map { it.key }
+            id.startsWith("c:") -> Repo.db.groupKeys(f, id.removePrefix("c:"))
+            else -> emptyList()
+        }
+    }
+
+    /** Chaves de todos os canais de uma lista de origem. */
+    suspend fun keysOfOrigin(src: String): List<String> = withContext(Dispatchers.IO) {
+        Repo.db.srcKeys(Repo.flt(SettingsStore.value, src, null))
+    }
+
     val events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)
 
     init {
         viewModelScope.launch {
-            Repo.reload()
+            Repo.ensureLoaded()
             val s = SettingsStore.value
             val limit = s.autoRefreshHours * 3_600_000L
             val stale = s.autoRefreshHours > 0 && System.currentTimeMillis() - s.lastRefresh > limit
             val missing = Repo.sources.value.any { it.enabled && !Repo.hasCache(it.id) }
-            if (Repo.channels.value.isEmpty() || stale || missing) {
+            val empty = withContext(Dispatchers.IO) { Repo.db.count() == 0 }
+            if (empty || stale || missing) {
                 doRefresh(false)
             }
             if (s.reopenLast && s.lastChannelKey.isNotEmpty() && player.current == null) {
-                val c = Repo.channels.value.firstOrNull { it.key == s.lastChannelKey }
+                val c = withContext(Dispatchers.IO) { Repo.byKey(s.lastChannelKey) }
                 val st = Repo.states.value[s.lastChannelKey]
                 if (c != null && st?.disabled != true && st?.deleted != true) {
                     playPreview(c, listOf(c))
@@ -270,8 +353,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Fica o favorito, depois o ativo, depois o mais assistido. Dá para desfazer.
      */
     fun removeDuplicates() {
-        val list = items.value.filter { !it.st.deleted }
-        val parent = IntArray(list.size) { it }
+        viewModelScope.launch {
+            val toDelete = withContext(Dispatchers.Default) { findDuplicates() }
+            if (toDelete.isEmpty()) {
+                toast("Nenhum canal duplicado encontrado.")
+                return@launch
+            }
+            Repo.updateStates(toDelete) { it.copy(deleted = true, favorite = false) }
+            val msg = if (toDelete.size == 1) "1 canal duplicado excluído." else toDelete.size.toString() + " canais duplicados excluídos."
+            events.tryEmit(UiEvent(msg, "Desfazer") { restore(toDelete, false) })
+        }
+    }
+
+    private fun findDuplicates(): List<String> {
+        val st = Repo.states.value
+        val keys = ArrayList<String>()
+        val nUrls = ArrayList<Int>()
+        var parent = IntArray(1024) { it }
         fun find(x: Int): Int {
             var r = x
             while (parent[r] != r) r = parent[r]
@@ -285,38 +383,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val byName = HashMap<String, Int>()
         val byUrl = HashMap<String, Int>()
-        for ((i, ci) in list.withIndex()) {
-            val nk = Repo.norm(ci.title)
+        Repo.db.forEachForDedupe { key, nn, un, n ->
+            val i = keys.size
+            keys.add(key)
+            nUrls.add(n)
+            if (i >= parent.size) parent = parent.copyOf(parent.size * 2).also { for (j in parent.size until it.size) it[j] = j }
+            val custom = st[key]?.customName
+            val nk = if (custom.isNullOrBlank()) nn else Repo.norm(custom)
             if (nk.isNotEmpty()) {
                 val j = byName[nk]
                 if (j == null) byName[nk] = i else parent[find(i)] = find(j)
             }
-            for (u in ci.ch.urls) {
-                val uk = Repo.normUrl(u)
-                val j = byUrl[uk]
-                if (j == null) byUrl[uk] = i else parent[find(i)] = find(j)
+            if (un.isNotEmpty()) {
+                val j = byUrl[un]
+                if (j == null) byUrl[un] = i else parent[find(i)] = find(j)
             }
         }
-        val groups = HashMap<Int, MutableList<ChannelItem>>()
-        for (i in list.indices) groups.getOrPut(find(i)) { mutableListOf() }.add(list[i])
+        val groups = HashMap<Int, MutableList<Int>>()
+        for (i in keys.indices) groups.getOrPut(find(i)) { ArrayList() }.add(i)
         val toDelete = ArrayList<String>()
         for (g in groups.values) {
             if (g.size < 2) continue
             val best = g.sortedWith(
-                compareByDescending<ChannelItem> { it.st.favorite }
-                    .thenBy { it.st.disabled }
-                    .thenByDescending { it.st.plays }
-                    .thenByDescending { it.ch.urls.size }
+                compareByDescending<Int> { st[keys[it]]?.favorite == true }
+                    .thenBy { st[keys[it]]?.disabled == true }
+                    .thenByDescending { st[keys[it]]?.plays ?: 0 }
+                    .thenByDescending { nUrls[it] }
             ).first()
-            for (c in g) if (c.ch.key != best.ch.key) toDelete.add(c.ch.key)
+            for (i in g) if (i != best) toDelete.add(keys[i])
         }
-        if (toDelete.isEmpty()) {
-            toast("Nenhum canal duplicado encontrado.")
-            return
-        }
-        Repo.updateStates(toDelete) { it.copy(deleted = true, favorite = false) }
-        val msg = if (toDelete.size == 1) "1 canal duplicado excluído." else toDelete.size.toString() + " canais duplicados excluídos."
-        events.tryEmit(UiEvent(msg, "Desfazer") { restore(toDelete, false) })
+        return toDelete
     }
 
     /** Move canais para outro grupo (ou, com null, volta ao grupo original). Dá para desfazer. */
@@ -363,8 +459,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     name = (name ?: "").replace(Regex("(?i)\\.(m3u8?|txt)$"), "").trim()
                     if (name.isEmpty()) name = "Lista importada"
-                    val text = cr.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    if (text == null) null else Repo.importM3u(text, name)
+                    Repo.ensureLoaded()
+                    val ins = cr.openInputStream(uri)
+                    if (ins == null) null else Repo.importM3u(ins.reader(Charsets.UTF_8), name)
                 } catch (e: Exception) {
                     null
                 }
@@ -376,6 +473,45 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 toast(res.first.toString() + " canais novos importados, " + res.second + " ignorados (já existiam).")
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ backup
+
+    fun backupTo(okMessage: String = "Backup salvo.", open: () -> java.io.OutputStream?) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    Repo.ensureLoaded()
+                    val o = open()
+                    if (o == null) false else {
+                        o.use { Repo.exportBackup(it) }
+                        true
+                    }
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            toast(if (ok) okMessage else "Não foi possível salvar o backup.")
+        }
+    }
+
+    fun restoreFrom(open: () -> java.io.InputStream?) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    val i = open()
+                    if (i == null) false else i.use { Repo.importBackup(it) }
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            if (!ok) {
+                toast("Esse arquivo não é um backup do TV Aberta.")
+                return@launch
+            }
+            toast("Backup restaurado.")
+            if (Repo.sources.value.any { it.enabled && !Repo.hasCache(it.id) }) doRefresh(false)
         }
     }
 

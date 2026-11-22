@@ -53,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,11 +63,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.willian.tvaberta.MainViewModel
 import com.willian.tvaberta.data.ChannelItem
+import com.willian.tvaberta.data.Repo
 import com.willian.tvaberta.data.SettingsStore
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun ManageScreen(vm: MainViewModel) {
-    val all by vm.items.collectAsState()
+    val dv by Repo.dataVersion.collectAsState()
+    val scope = rememberCoroutineScope()
     val s by SettingsStore.flow.collectAsState()
     var tab by remember { mutableStateOf(0) }
     var query by remember { mutableStateOf("") }
@@ -78,30 +83,33 @@ fun ManageScreen(vm: MainViewModel) {
         if (uri != null) vm.importM3u(uri)
     }
 
-    val nActive = remember(all) { all.count { !it.st.deleted && !it.st.disabled } }
-    val nOff = remember(all) { all.count { !it.st.deleted && it.st.disabled } }
-    val nDeleted = remember(all) { all.count { it.st.deleted } }
+    val counts by produceState(Triple(0, 0, 0), dv) {
+        value = withContext(Dispatchers.IO) {
+            Triple(Repo.db.manageCount(0, ""), Repo.db.manageCount(1, ""), Repo.db.manageCount(2, ""))
+        }
+    }
+    val nActive = counts.first
+    val nOff = counts.second
+    val nDeleted = counts.third
 
-    val list by produceState(emptyList<ChannelItem>(), all, tab, query) {
-        value = withContext(Dispatchers.Default) {
-            val q = query.trim()
-            sortByTitle(
-                all.filter {
-                    val inTab = when (tab) {
-                        0 -> !it.st.deleted && !it.st.disabled
-                        1 -> !it.st.deleted && it.st.disabled
-                        else -> it.st.deleted
-                    }
-                    inTab && (q.isEmpty() || it.title.contains(q, ignoreCase = true))
-                }
-            )
+    val total by produceState(0, dv, tab, query) {
+        delay(200)
+        value = withContext(Dispatchers.IO) { Repo.db.manageCount(tab, query.trim()) }
+    }
+    val list by produceState(emptyList<ChannelItem>(), dv, tab, query) {
+        delay(200)
+        value = withContext(Dispatchers.IO) { Repo.db.manageList(tab, query.trim(), 500).map { Repo.item(it) } }
+    }
+
+    fun selectAll() {
+        scope.launch {
+            selected = withContext(Dispatchers.IO) { Repo.db.manageKeys(tab, query.trim()).toSet() }
         }
     }
 
     LaunchedEffect(tab) { selected = emptySet() }
 
-    val keysInList = remember(list) { list.map { it.ch.key } }
-    val allSelected = keysInList.isNotEmpty() && selected.containsAll(keysInList)
+    val allSelected = total > 0 && selected.size >= total
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -169,16 +177,16 @@ fun ManageScreen(vm: MainViewModel) {
                     Modifier
                         .fillMaxWidth()
                         .clickable {
-                            selected = if (allSelected) emptySet() else keysInList.toSet()
+                            if (allSelected) selected = emptySet() else selectAll()
                         }
                         .padding(horizontal = 12.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(checked = allSelected, onCheckedChange = {
-                        selected = if (allSelected) emptySet() else keysInList.toSet()
+                        if (allSelected) selected = emptySet() else selectAll()
                     })
                     Text(
-                        if (selected.isEmpty()) "Selecionar todos (${list.size})" else "${selected.size} selecionado(s)",
+                        if (selected.isEmpty()) "Selecionar todos ($total)" else "${selected.size} selecionado(s)",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
