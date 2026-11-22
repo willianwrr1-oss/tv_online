@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -36,13 +37,50 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val player = PlayerController(app)
 
+    // Lista de canais + escolhas do usuário. Quando só as escolhas mudam (favoritar, tocar um canal),
+    // refaz apenas os itens afetados em vez de recriar dezenas de milhares de objetos.
+    private var prevChs: List<Channel>? = null
+    private var prevSts: Map<String, ChannelState> = emptyMap()
+    private var prevItems: List<ChannelItem> = emptyList()
+    private var posByKey: HashMap<String, Int> = HashMap()
+
+    private fun makeItem(ch: Channel, st: ChannelState): ChannelItem {
+        val g = st.customGroup
+        return ChannelItem(if (g != null) ch.copy(groups = listOf(g)) else ch, st)
+    }
+
     val items: StateFlow<List<ChannelItem>> =
         combine(Repo.channels, Repo.states) { chs, sts ->
-            chs.map { ch ->
-                val st = sts[ch.key] ?: ChannelState()
-                val g = st.customGroup
-                ChannelItem(if (g != null) ch.copy(groups = listOf(g)) else ch, st)
+            val sameChannels = chs === prevChs && prevItems.size == chs.size
+            val out: List<ChannelItem>
+            if (sameChannels) {
+                val changed = HashSet<String>()
+                for ((k, v) in sts) if (prevSts[k] != v) changed.add(k)
+                for (k in prevSts.keys) if (!sts.containsKey(k)) changed.add(k)
+                if (changed.isEmpty()) {
+                    out = prevItems
+                } else {
+                    val copy = ArrayList(prevItems)
+                    for (k in changed) {
+                        val pos = posByKey[k] ?: continue
+                        copy[pos] = makeItem(chs[pos], sts[k] ?: ChannelState())
+                    }
+                    out = copy
+                }
+            } else {
+                val pos = HashMap<String, Int>(chs.size * 2)
+                val list = ArrayList<ChannelItem>(chs.size)
+                for ((i, ch) in chs.withIndex()) {
+                    pos[ch.key] = i
+                    list.add(makeItem(ch, sts[ch.key] ?: ChannelState()))
+                }
+                posByKey = pos
+                out = list
             }
+            prevChs = chs
+            prevSts = sts
+            prevItems = out
+            out
         }
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -51,9 +89,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val category = MutableStateFlow<String?>(null)
     val origin = MutableStateFlow<String?>(null)
 
+    /** Grupos da tela de TV ao vivo, montados em segundo plano; a busca espera a pessoa parar de digitar. */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    val liveModel: StateFlow<com.willian.tvaberta.ui.LiveModel> =
+        combine(items, SettingsStore.flow, query.debounce(200), origin) { all, st, q, o ->
+            com.willian.tvaberta.ui.buildLiveModel(all, st, q, o)
+        }
+            .flowOn(Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, com.willian.tvaberta.ui.LiveModel.EMPTY)
+
     var tab by mutableIntStateOf(0)
     var settingsPage by mutableStateOf<String?>(null)
     var inPip by mutableStateOf(false)
+    var fullscreen by mutableStateOf(false)
+    var previewMode by mutableStateOf(false)
+    var liveGroup by mutableStateOf<String?>(null)
     var renameTarget by mutableStateOf<ChannelItem?>(null)
     var pendingDelete by mutableStateOf<List<String>>(emptyList())
 
@@ -73,7 +123,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val c = Repo.channels.value.firstOrNull { it.key == s.lastChannelKey }
                 val st = Repo.states.value[s.lastChannelKey]
                 if (c != null && st?.disabled != true && st?.deleted != true) {
-                    play(c, listOf(c))
+                    playPreview(c, listOf(c))
                 }
             }
             // Guia de programação: usa o cache na hora e baixa de novo só se estiver velho.
@@ -134,13 +184,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ reprodução
 
+    /** Reproduz em tela cheia (Favoritos, Guia). */
     fun play(ch: Channel, queue: List<Channel>) {
         inPip = false
+        previewMode = false
+        fullscreen = true
         player.play(ch, queue)
     }
 
+    /** Reproduz na pré-visualização da tela de TV ao vivo. */
+    fun playPreview(ch: Channel, queue: List<Channel>) {
+        inPip = false
+        previewMode = true
+        fullscreen = false
+        player.play(ch, queue)
+    }
+
+    fun openFullscreen() {
+        if (player.current != null) fullscreen = true
+    }
+
     fun closePlayer() {
+        if (previewMode && fullscreen) {
+            fullscreen = false
+        } else {
+            player.stop()
+            previewMode = false
+            fullscreen = false
+        }
+    }
+
+    fun stopPreview() {
         player.stop()
+        previewMode = false
+        fullscreen = false
     }
 
     // ------------------------------------------------------------------ ações nos canais

@@ -1,5 +1,9 @@
 package com.willian.tvaberta.ui
 
+import com.willian.tvaberta.data.ChannelItem
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.runtime.produceState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -64,10 +68,13 @@ fun GuideScreen(vm: MainViewModel) {
     }
     val end = start + WINDOW_MIN * 60_000L
 
-    val rows = remember(all, version, s.hideGeoBlocked, s.hideNot247, s.epgEnabled) {
-        if (!s.epgEnabled) emptyList()
-        else all.filter { isListed(it, s) && Epg.programmes(it.ch).isNotEmpty() }
-            .sortedBy { it.title.lowercase() }
+    val rows by produceState(
+        emptyList<ChannelItem>(), all, version, s.hideGeoBlocked, s.hideNot247, s.epgEnabled
+    ) {
+        value = withContext(Dispatchers.Default) {
+            if (!s.epgEnabled) emptyList()
+            else sortByTitle(all.filter { isListed(it, s) && Epg.programmes(it.ch).isNotEmpty() })
+        }
     }
     val queue: List<Channel> = remember(rows) { rows.map { it.ch } }
 

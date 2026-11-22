@@ -297,7 +297,7 @@ fun ChannelsScreen(vm: MainViewModel, favoritesOnly: Boolean) {
 /** Envolve um chip e detecta o toque longo por cima dele (o chip sozinho consome o toque). */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LongPressBox(onClick: () -> Unit, onLong: () -> Unit, content: @Composable () -> Unit) {
+internal fun LongPressBox(onClick: () -> Unit, onLong: () -> Unit, content: @Composable () -> Unit) {
     val haptic = LocalHapticFeedback.current
     Box {
         content()

@@ -1,5 +1,8 @@
 package com.willian.tvaberta.ui
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.runtime.produceState
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -79,16 +82,20 @@ fun ManageScreen(vm: MainViewModel) {
     val nOff = remember(all) { all.count { !it.st.deleted && it.st.disabled } }
     val nDeleted = remember(all) { all.count { it.st.deleted } }
 
-    val list: List<ChannelItem> = remember(all, tab, query) {
-        val q = query.trim()
-        all.filter {
-            val inTab = when (tab) {
-                0 -> !it.st.deleted && !it.st.disabled
-                1 -> !it.st.deleted && it.st.disabled
-                else -> it.st.deleted
-            }
-            inTab && (q.isEmpty() || it.title.contains(q, ignoreCase = true))
-        }.sortedBy { it.title.lowercase() }
+    val list by produceState(emptyList<ChannelItem>(), all, tab, query) {
+        value = withContext(Dispatchers.Default) {
+            val q = query.trim()
+            sortByTitle(
+                all.filter {
+                    val inTab = when (tab) {
+                        0 -> !it.st.deleted && !it.st.disabled
+                        1 -> !it.st.deleted && it.st.disabled
+                        else -> it.st.deleted
+                    }
+                    inTab && (q.isEmpty() || it.title.contains(q, ignoreCase = true))
+                }
+            )
+        }
     }
 
     LaunchedEffect(tab) { selected = emptySet() }

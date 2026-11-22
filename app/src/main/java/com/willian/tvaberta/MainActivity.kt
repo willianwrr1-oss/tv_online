@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        if (vm.player.current != null && SettingsStore.value.pipOnLeave && vm.player.isPlayingNow()) {
+        if (vm.player.current != null && vm.fullscreen && SettingsStore.value.pipOnLeave && vm.player.isPlayingNow()) {
             enterPip(this)
         }
     }

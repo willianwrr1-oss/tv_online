@@ -53,7 +53,7 @@ fun AppRoot(vm: MainViewModel) {
     val s by SettingsStore.flow.collectAsState()
     AppTheme(s) {
         val host = remember { SnackbarHostState() }
-        val playing = vm.player.current != null
+        val playing = vm.player.current != null && vm.fullscreen
 
         LaunchedEffect(Unit) {
             vm.events.collect { e ->
@@ -65,6 +65,10 @@ fun AppRoot(vm: MainViewModel) {
                 )
                 if (r == SnackbarResult.ActionPerformed) e.onAction?.invoke()
             }
+        }
+
+        LaunchedEffect(vm.tab) {
+            if (vm.tab != 0 && vm.previewMode && !vm.fullscreen) vm.stopPreview()
         }
 
         BackHandler(enabled = !playing && (vm.tab != 0 || vm.settingsPage != null)) {
@@ -96,7 +100,7 @@ fun AppRoot(vm: MainViewModel) {
                         .padding(pad)
                 ) {
                     when (vm.tab) {
-                        0 -> ChannelsScreen(vm, favoritesOnly = false)
+                        0 -> LiveScreen(vm)
                         1 -> GuideScreen(vm)
                         2 -> ChannelsScreen(vm, favoritesOnly = true)
                         3 -> ManageScreen(vm)
