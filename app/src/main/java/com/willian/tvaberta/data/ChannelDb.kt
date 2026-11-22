@@ -24,7 +24,7 @@ class Flt(
  *
  * Tabelas: ch (canais), cg (canal x grupo), st (escolhas do usuário).
  */
-class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
+class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 2) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -36,7 +36,7 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
             "CREATE TABLE ch(k TEXT PRIMARY KEY, name TEXT NOT NULL, nl TEXT NOT NULL, nn TEXT NOT NULL, " +
                 "logo TEXT, urls TEXT NOT NULL, ua TEXT, ref TEXT, q TEXT, geo INTEGER NOT NULL, " +
                 "n247 INTEGER NOT NULL, src TEXT NOT NULL, grps TEXT NOT NULL, kind INTEGER NOT NULL, " +
-                "idl TEXT NOT NULL, un TEXT NOT NULL, pack TEXT)"
+                "idl TEXT NOT NULL, un TEXT NOT NULL, pack TEXT, series TEXT, sn INTEGER NOT NULL DEFAULT 0, ep INTEGER NOT NULL DEFAULT 0)"
         )
         db.execSQL("CREATE INDEX ch_src ON ch(src)")
         db.execSQL("CREATE INDEX ch_nl ON ch(nl)")
@@ -44,6 +44,8 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
         db.execSQL("CREATE INDEX ch_un ON ch(un)")
         db.execSQL("CREATE INDEX ch_idl ON ch(idl)")
         db.execSQL("CREATE INDEX ch_pack ON ch(pack)")
+        db.execSQL("CREATE INDEX ch_kind ON ch(kind)")
+        db.execSQL("CREATE INDEX ch_series ON ch(series)")
         db.execSQL("CREATE TABLE cg(k TEXT NOT NULL, grp TEXT NOT NULL)")
         db.execSQL("CREATE INDEX cg_grp ON cg(grp, k)")
         db.execSQL("CREATE INDEX cg_k ON cg(k)")
@@ -53,7 +55,30 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
         )
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE ch ADD COLUMN series TEXT")
+            db.execSQL("ALTER TABLE ch ADD COLUMN sn INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE ch ADD COLUMN ep INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("CREATE INDEX IF NOT EXISTS ch_kind ON ch(kind)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS ch_series ON ch(series)")
+            val rows = ArrayList<Array<String>>()
+            db.rawQuery("SELECT k,name,grps FROM ch WHERE kind=2", null).use { c ->
+                while (c.moveToNext()) rows.add(arrayOf(c.getString(0), c.getString(1), c.getString(2)))
+            }
+            val up = db.compileStatement("UPDATE ch SET series=?, sn=?, ep=? WHERE k=?")
+            for (r in rows) {
+                val (ser, sn, ep) = parseSeries(r[1], r[2].split(GSEP).filter { it.isNotEmpty() })
+                up.clearBindings()
+                up.bindString(1, ser)
+                up.bindLong(2, sn.toLong())
+                up.bindLong(3, ep.toLong())
+                up.bindString(4, r[0])
+                up.executeUpdateDelete()
+            }
+            up.close()
+        }
+    }
 
     // ------------------------------------------------------------------ gravação
 
@@ -76,8 +101,8 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
         val d = writableDatabase
         if (insStmt == null) {
             insStmt = d.compileStatement(
-                "INSERT OR IGNORE INTO ch(k,name,nl,nn,logo,urls,ua,ref,q,geo,n247,src,grps,kind,idl,un,pack) " +
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                "INSERT OR IGNORE INTO ch(k,name,nl,nn,logo,urls,ua,ref,q,geo,n247,src,grps,kind,idl,un,pack,series,sn,ep) " +
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )
             cgStmt = d.compileStatement("INSERT INTO cg(k,grp) VALUES(?,?)")
         }
@@ -112,10 +137,20 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
         st.bindLong(11, if (c.not247) 1 else 0)
         st.bindString(12, c.sourceId)
         st.bindString(13, c.groups.joinToString(GSEP))
-        st.bindLong(14, classify(c.name, c.groups, c.urls.firstOrNull() ?: "").toLong())
+        val kind = classify(c.name, c.groups, c.urls.firstOrNull() ?: "")
+        st.bindLong(14, kind.toLong())
         st.bindString(15, idOf(c.key))
         st.bindString(16, normUrl(c.urls.firstOrNull() ?: ""))
         if (pack != null) st.bindString(17, pack)
+        if (kind == 2) {
+            val (ser, sn, ep) = parseSeries(c.name, c.groups)
+            st.bindString(18, ser)
+            st.bindLong(19, sn.toLong())
+            st.bindLong(20, ep.toLong())
+        } else {
+            st.bindLong(19, 0)
+            st.bindLong(20, 0)
+        }
         val rid = st.executeInsert()
         if (rid != -1L) {
             val g = cgStmt!!
@@ -373,6 +408,58 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
         return out
     }
 
+    // ------------------------------------------------------------------ séries
+
+    fun seriesCounts(f: Flt): List<GroupCount> {
+        val a = ArrayList<String>()
+        val w = where(f, a)
+        val out = ArrayList<GroupCount>()
+        readableDatabase.rawQuery(
+            "SELECT c.series, COUNT(*) $from WHERE $w AND c.series IS NOT NULL GROUP BY c.series", a.toTypedArray()
+        ).use { c -> while (c.moveToNext()) out.add(GroupCount(c.getString(0), c.getInt(1))) }
+        return out
+    }
+
+    fun seriesTotal(f: Flt): Int {
+        val a = ArrayList<String>()
+        val w = where(f, a)
+        return scalar("SELECT COUNT(DISTINCT c.series) $from WHERE $w AND c.series IS NOT NULL", a)
+    }
+
+    /** Temporadas de uma série: (número da temporada, quantidade de episódios). Temporada 0 = sem número. */
+    fun seasonCounts(f: Flt, series: String): List<Pair<Int, Int>> {
+        val a = ArrayList<String>()
+        val w = where(f, a)
+        a.add(series)
+        val out = ArrayList<Pair<Int, Int>>()
+        readableDatabase.rawQuery(
+            "SELECT c.sn, COUNT(*) $from WHERE $w AND c.series=? GROUP BY c.sn ORDER BY c.sn", a.toTypedArray()
+        ).use { c -> while (c.moveToNext()) out.add(Pair(c.getInt(0), c.getInt(1))) }
+        return out
+    }
+
+    fun episodes(f: Flt, series: String, season: Int, limit: Int, offset: Int): List<Channel> {
+        val a = ArrayList<String>()
+        val w = where(f, a)
+        a.add(series)
+        return list(
+            "SELECT $cols $from WHERE $w AND c.series=? AND c.sn=$season ORDER BY c.ep, c.nl LIMIT $limit OFFSET $offset", a
+        )
+    }
+
+    /** Chaves dos episódios de uma série (season = null: a série toda). */
+    fun seriesKeys(f: Flt, series: String, season: Int?): List<String> {
+        val a = ArrayList<String>()
+        var w = where(f, a) + " AND c.series=?"
+        a.add(series)
+        if (season != null) w += " AND c.sn=$season"
+        val out = ArrayList<String>()
+        readableDatabase.rawQuery("SELECT c.k $from WHERE $w", a.toTypedArray()).use { c ->
+            while (c.moveToNext()) out.add(c.getString(0))
+        }
+        return out
+    }
+
     fun srcKeys(f: Flt): List<String> {
         val a = ArrayList<String>()
         val w = where(f, a)
@@ -537,6 +624,41 @@ class ChannelDb(ctx: Context) : SQLiteOpenHelper(ctx, "channels.db", null, 1) {
         }
 
         private val seriesRe = Regex("\\b(s\\d{1,2}\\s?[ex]\\d{1,3}|t\\d{1,2}\\s?[ex]?p?\\d{1,3}|\\d{1,2}x\\d{1,3})\\b")
+
+        private val reSeries = Regex(
+            "^(.*?)[\\s._\\-–:]*\\b(?:s(\\d{1,2})\\s?[ex]\\s?(\\d{1,3})|t(\\d{1,2})\\s?[ex]\\s?(\\d{1,3})|(\\d{1,2})x(\\d{1,3}))\\b",
+            RegexOption.IGNORE_CASE
+        )
+        private val reEp = Regex(
+            "^(.*?)[\\s._\\-–:]*\\b(?:ep|epis[oó]dio|episode|cap[ií]tulo|cap)\\.?\\s?(\\d{1,3})\\b",
+            RegexOption.IGNORE_CASE
+        )
+
+        /** (nome da série, temporada, episódio) adivinhados pelo nome; temporada 0 = desconhecida. */
+        fun parseSeries(name: String, groups: List<String>): Triple<String, Int, Int> {
+            val m = reSeries.find(name)
+            if (m != null) {
+                val g = m.groupValues
+                val title = g[1].trim().ifEmpty { name.trim() }
+                val sn = (g[2].ifEmpty { g[4].ifEmpty { g[6] } }).toIntOrNull() ?: 0
+                val ep = (g[3].ifEmpty { g[5].ifEmpty { g[7] } }).toIntOrNull() ?: 0
+                return Triple(title, sn, ep)
+            }
+            val e = reEp.find(name)
+            if (e != null) {
+                val title = e.groupValues[1].trim().ifEmpty { name.trim() }
+                return Triple(title, 1, e.groupValues[2].toIntOrNull() ?: 0)
+            }
+            val gen = setOf("serie", "series", "série", "séries", "undefined", "seriado", "seriados")
+            val grp = groups.firstOrNull { it.lowercase(Locale.ROOT) !in gen }
+            val dash = name.indexOf(" - ")
+            val title = when {
+                dash > 0 -> name.substring(0, dash).trim()
+                grp != null -> grp
+                else -> name.trim()
+            }
+            return Triple(title, 0, 0)
+        }
 
         /** 0 = ao vivo, 1 = filme, 2 = série (palpite pelo nome, grupo e link). */
         fun classify(name: String, groups: List<String>, url: String): Int {

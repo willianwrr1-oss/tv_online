@@ -37,6 +37,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+class HomeCounts(val live: Int, val liveCats: Int, val movies: Int, val series: Int)
+
 class UiEvent(
     val text: String,
     val actionLabel: String? = null,
@@ -57,44 +59,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var fullscreen by mutableStateOf(false)
     var previewMode by mutableStateOf(false)
     var liveGroup by mutableStateOf<String?>(null)
+    var liveSub by mutableStateOf<String?>(null)
+    var area by mutableStateOf<Int?>(null)
     var renameTarget by mutableStateOf<ChannelItem?>(null)
     var pendingDelete by mutableStateOf<List<String>>(emptyList())
 
-    private class LiveKey(val hideGeo: Boolean, val hideN247: Boolean, val sortMode: Int)
+    private class LiveKey(val hideGeo: Boolean, val hideN247: Boolean, val sortMode: Int, val kind: Int?)
 
     private class LiveParams(val ready: Boolean, val key: LiveKey, val q: String, val org: String?)
 
-    private class OpenPage(val id: String?, val items: List<com.willian.tvaberta.data.Channel>, val more: Boolean)
+    private class OpenPage(
+        val top: String?,
+        val id: String?,
+        val items: List<Channel>,
+        val more: Boolean,
+        val seasons: List<Pair<Int, Int>>,
+    )
 
     private val pageSize = 300
     private val groupLimit = MutableStateFlow<Pair<String?, Int>>(Pair(null, pageSize))
 
-    private val liveKey = SettingsStore.flow
-        .map { LiveKey(it.hideGeoBlocked, it.hideNot247, it.sortMode) }
-        .distinctUntilChanged { a, b -> a.hideGeo == b.hideGeo && a.hideN247 == b.hideN247 && a.sortMode == b.sortMode }
+    private val liveKey = combine(SettingsStore.flow, snapshotFlow { area }) { st, a ->
+        LiveKey(st.hideGeoBlocked, st.hideNot247, st.sortMode, a)
+    }.distinctUntilChanged { a, b ->
+        a.hideGeo == b.hideGeo && a.hideN247 == b.hideN247 && a.sortMode == b.sortMode && a.kind == b.kind
+    }
 
     @OptIn(kotlinx.coroutines.FlowPreview::class)
     private val liveParams = combine(Repo.ready, Repo.dataVersion, liveKey, query.debounce(200), origin) { r, _, k, q, o ->
         LiveParams(r, k, q.trim(), o)
     }
 
-    private fun fltOf(p: LiveParams, src: String?): Flt =
-        Flt(hideGeo = p.key.hideGeo, hideN247 = p.key.hideN247, src = src, q = p.q.ifEmpty { null })
+    private fun fltOf(p: LiveParams, src: String?, useKind: Boolean = true): Flt =
+        Flt(
+            hideGeo = p.key.hideGeo, hideN247 = p.key.hideN247, src = src, q = p.q.ifEmpty { null },
+            kind = if (useKind) p.key.kind else null
+        )
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val liveHead: StateFlow<LiveHead?> = liveParams
         .mapLatest { p ->
-            if (!p.ready) null
-            else withContext(Dispatchers.Default) { buildLiveHead(SettingsStore.value, p.q, p.org) }
+            if (!p.ready || p.key.kind == null) null
+            else withContext(Dispatchers.Default) { buildLiveHead(SettingsStore.value, p.q, p.org, p.key.kind) }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** Favoritos e recentes (atalhos no topo da lista). */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    private val liveLight: StateFlow<Pair<List<com.willian.tvaberta.data.Channel>, List<com.willian.tvaberta.data.Channel>>?> =
+    private val liveLight: StateFlow<Pair<List<Channel>, List<Channel>>?> =
         combine(liveParams, Repo.stateVersion) { p, _ -> p }
             .mapLatest { p ->
-                if (!p.ready) null
+                if (!p.ready || p.key.kind == null) null
                 else withContext(Dispatchers.Default) {
                     val f = fltOf(p, p.org)
                     Pair(Repo.db.favorites(f, p.key.sortMode, 500), Repo.db.recents(f, 20))
@@ -102,23 +117,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** Canais do grupo aberto, em páginas (cada rolagem até o fim pede a próxima). */
+    /** Canais do grupo (ou episódios da temporada) aberto, em páginas. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val openPage: StateFlow<OpenPage?> =
-        combine(liveParams, snapshotFlow { liveGroup }, groupLimit) { p, g, lim -> Triple(p, g, lim) }
-            .mapLatest { (p, g, lim) ->
-                if (!p.ready || g == null || !g.startsWith("c:")) {
-                    OpenPage(g, emptyList(), false)
+        combine(liveParams, snapshotFlow { liveGroup }, snapshotFlow { liveSub }, groupLimit) { p, g, sub, lim ->
+            Pair(Pair(p, g), Pair(sub, lim))
+        }
+            .mapLatest { (pg, sl) ->
+                val p = pg.first
+                val g = pg.second
+                val sub = sl.first
+                val lim = sl.second
+                if (!p.ready || g == null) {
+                    OpenPage(null, null, emptyList(), false, emptyList())
                 } else withContext(Dispatchers.Default) {
-                    val limit = if (lim.first == g) lim.second else pageSize
                     val f = fltOf(p, p.org)
-                    val list = Repo.db.channelsInGroup(f, g.removePrefix("c:"), p.key.sortMode, limit + 1, 0)
-                    OpenPage(g, if (list.size > limit) list.subList(0, limit) else list, list.size > limit)
+                    if (g.startsWith("c:")) {
+                        val limit = if (lim.first == g) lim.second else pageSize
+                        val list = Repo.db.channelsInGroup(f, g.removePrefix("c:"), p.key.sortMode, limit + 1, 0)
+                        OpenPage(g, g, if (list.size > limit) list.subList(0, limit) else list, list.size > limit, emptyList())
+                    } else if (g.startsWith("s:")) {
+                        val series = g.removePrefix("s:")
+                        val seasons = Repo.db.seasonCounts(f, series)
+                        if (sub != null && sub.startsWith("e:")) {
+                            val season = sub.substringAfterLast('|').toIntOrNull() ?: 0
+                            val limit = if (lim.first == sub) lim.second else pageSize
+                            val list = Repo.db.episodes(f, series, season, limit + 1, 0)
+                            OpenPage(g, sub, if (list.size > limit) list.subList(0, limit) else list, list.size > limit, seasons)
+                        } else {
+                            OpenPage(g, g, emptyList(), false, seasons)
+                        }
+                    } else {
+                        OpenPage(g, g, emptyList(), false, emptyList())
+                    }
                 }
             }
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** Grupos da tela de TV ao vivo, montados em segundo plano a partir do banco. */
+    /** Grupos da área aberta (ao vivo, filmes ou séries), montados em segundo plano a partir do banco. */
     val liveModel: StateFlow<LiveModel> =
         combine(liveHead, liveLight, openPage, Repo.states) { h, l, o, st ->
             if (h == null) {
@@ -132,15 +168,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     groups.add(LiveGroup("rec", "Assistidos recentemente", recents.size, recents.map { Repo.item(it, st) }, false))
                 }
                 for (c in h.cats) {
-                    val id = "c:" + c.grp
-                    val open = o != null && o.id == id
-                    groups.add(
-                        LiveGroup(
-                            id, catLabel(c.grp), c.n,
-                            if (open) o!!.items.map { Repo.item(it, st) } else emptyList(),
-                            true, open && o!!.more
+                    if (h.kind == 2) {
+                        val id = "s:" + c.grp
+                        val topOpen = o != null && o.top == id
+                        val kids = if (topOpen) {
+                            o!!.seasons.map { (sn, n) ->
+                                val cid = "e:" + c.grp + "|" + sn
+                                val subOpen = o.id == cid
+                                LiveGroup(
+                                    cid, seasonLabel(sn), n,
+                                    if (subOpen) o.items.map { Repo.item(it, st) } else emptyList(),
+                                    false, subOpen && o.more
+                                )
+                            }
+                        } else emptyList()
+                        groups.add(LiveGroup(id, c.grp, c.n, emptyList(), true, false, kids))
+                    } else {
+                        val id = "c:" + c.grp
+                        val open = o != null && o.top == id
+                        groups.add(
+                            LiveGroup(
+                                id, catLabel(c.grp), c.n,
+                                if (open) o!!.items.map { Repo.item(it, st) } else emptyList(),
+                                true, open && o!!.more
+                            )
                         )
-                    )
+                    }
                 }
                 LiveModel(groups, h.total, h.origins, h.org, true)
             }
@@ -148,13 +201,52 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .flowOn(Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.Eagerly, LiveModel.EMPTY)
 
-    /** Pede a próxima página do grupo aberto. */
+    /** Pede a próxima página do grupo (ou temporada) aberto. */
     fun loadMoreGroup() {
-        val g = liveGroup ?: return
+        val id = liveSub ?: liveGroup ?: return
         val cur = groupLimit.value
-        val base = if (cur.first == g) cur.second else pageSize
-        groupLimit.value = Pair(g, base + pageSize)
+        val base = if (cur.first == id) cur.second else pageSize
+        groupLimit.value = Pair(id, base + pageSize)
     }
+
+    /** Abre uma área do Início (0 = ao vivo, 1 = filmes, 2 = séries); null volta ao Início. */
+    fun openArea(k: Int?) {
+        area = k
+        liveGroup = null
+        liveSub = null
+        query.value = ""
+        origin.value = null
+    }
+
+    // ---- Início
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val homeCounts: StateFlow<HomeCounts?> =
+        combine(Repo.ready, Repo.dataVersion, SettingsStore.flow.map { Pair(it.hideGeoBlocked, it.hideNot247) }.distinctUntilChanged()) { r, _, _ -> r }
+            .mapLatest { r ->
+                if (!r) null
+                else withContext(Dispatchers.Default) {
+                    val s = SettingsStore.value
+                    val db = Repo.db
+                    val f0 = Repo.flt(s, kind = 0)
+                    HomeCounts(
+                        db.totalCount(f0), db.groupCounts(f0).size,
+                        db.totalCount(Repo.flt(s, kind = 1)), db.seriesTotal(Repo.flt(s, kind = 2))
+                    )
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** "Continuar assistindo": os últimos itens reproduzidos, de qualquer área. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val continueWatching: StateFlow<List<ChannelItem>> =
+        combine(Repo.ready, Repo.dataVersion, Repo.stateVersion) { r, _, _ -> r }
+            .mapLatest { r ->
+                if (!r) emptyList()
+                else withContext(Dispatchers.Default) {
+                    Repo.db.recents(Repo.flt(SettingsStore.value), 12).map { Repo.item(it) }
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** Favoritos (lista completa da aba Favoritos), já com busca e ordem. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -163,30 +255,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             .mapLatest { p ->
                 if (!p.ready) emptyList()
                 else withContext(Dispatchers.Default) {
-                    Repo.db.favorites(fltOf(p, null), p.key.sortMode, 3000).map { Repo.item(it) }
+                    Repo.db.favorites(fltOf(p, null, useKind = false), p.key.sortMode, 3000).map { Repo.item(it) }
                 }
             }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private fun currentFlt(src: String?): Flt {
         val s = SettingsStore.value
-        return Repo.flt(s, src, query.value.trim().ifEmpty { null })
+        return Repo.flt(s, src, query.value.trim().ifEmpty { null }, area)
     }
 
-    /** Chaves de todos os canais de um grupo da lista ao vivo (respeita busca e lista de origem). */
+    /** Chaves de todos os canais de um grupo da lista (respeita busca e lista de origem). */
     suspend fun keysOfGroup(id: String): List<String> = withContext(Dispatchers.IO) {
         val f = currentFlt(origin.value)
         when {
             id == "fav" -> Repo.db.favorites(f, 0, 100000).map { it.key }
             id == "rec" -> Repo.db.recents(f, 20).map { it.key }
             id.startsWith("c:") -> Repo.db.groupKeys(f, id.removePrefix("c:"))
+            id.startsWith("s:") -> Repo.db.seriesKeys(f, id.removePrefix("s:"), null)
             else -> emptyList()
         }
     }
 
     /** Chaves de todos os canais de uma lista de origem. */
     suspend fun keysOfOrigin(src: String): List<String> = withContext(Dispatchers.IO) {
-        Repo.db.srcKeys(Repo.flt(SettingsStore.value, src, null))
+        Repo.db.srcKeys(Repo.flt(SettingsStore.value, src, null, area))
     }
 
     val events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 16)

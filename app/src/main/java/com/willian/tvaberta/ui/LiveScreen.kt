@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -90,6 +91,10 @@ fun LiveScreen(vm: MainViewModel) {
     val origins = model.origins
     val org = model.org
     val total = model.total
+    val area = vm.area
+    val areaTitle = when (area) { 1 -> "Filmes"; 2 -> "Séries"; else -> "TV ao vivo" }
+    val unit = when (area) { 1 -> "filme"; 2 -> "série"; else -> "canal" }
+    val countText = if (total == 1) "1 $unit" else "$total ${unit}s"
 
     var lowerTab by remember { mutableStateOf(0) }
     val ch = vm.player.current
@@ -121,7 +126,10 @@ fun LiveScreen(vm: MainViewModel) {
             }
         } else {
             Column(Modifier.fillMaxSize()) {
-                ScreenHeader("TV ao vivo", if (total == 1) "1 canal" else "${total} canais") {
+                ScreenHeader(areaTitle, countText) {
+                    IconButton(onClick = { vm.openArea(null) }) {
+                        Icon(Icons.Default.Home, contentDescription = "Voltar ao início")
+                    }
                     IconButton(onClick = { vm.refresh(true) }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Atualizar lista de canais")
                     }
@@ -147,9 +155,9 @@ fun LiveScreen(vm: MainViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilterChip(selected = lowerTab == 0, onClick = { lowerTab = 0 }, label = { Text("Canais") })
-                    FilterChip(selected = lowerTab == 1, onClick = { lowerTab = 1 }, label = { Text("Programação e dados") })
+                    if (area == 0) FilterChip(selected = lowerTab == 1, onClick = { lowerTab = 1 }, label = { Text("Programação e dados") })
                 }
-                if (lowerTab == 0) {
+                if (lowerTab == 0 || area != 0) {
                     GroupsPane(vm, groups, total, origins, org, query, s.sortMode, showHeader = true, refreshing = refreshing)
                 } else {
                     Column(Modifier.fillMaxSize().padding(12.dp)) {
@@ -194,12 +202,18 @@ private fun GroupsPane(
         if (!showHeader) {
             Row(Modifier.padding(start = 12.dp, end = 4.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("TV ao vivo", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     Text(
-                        if (total == 1) "1 canal" else "$total canais",
+                        when (vm.area) { 1 -> "Filmes"; 2 -> "Séries"; else -> "TV ao vivo" },
+                        fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        if (total == 1) "1 item" else "$total itens",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                IconButton(onClick = { vm.openArea(null) }) {
+                    Icon(Icons.Default.Home, contentDescription = "Voltar ao início")
                 }
                 IconButton(onClick = { vm.refresh(true) }) {
                     Icon(Icons.Default.Refresh, contentDescription = "Atualizar lista de canais")
@@ -217,7 +231,7 @@ private fun GroupsPane(
                 .padding(horizontal = 12.dp, vertical = 4.dp),
             singleLine = true,
             shape = RoundedCornerShape(28.dp),
-            placeholder = { Text("Buscar canal") },
+            placeholder = { Text(when (vm.area) { 1 -> "Buscar filme"; 2 -> "Buscar série"; else -> "Buscar canal" }) },
             leadingIcon = { Icon(Icons.Default.Search, null) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
@@ -270,34 +284,32 @@ private fun GroupsPane(
                             label = g.label,
                             count = g.count,
                             expanded = open == g.id,
-                            onClick = { vm.liveGroup = if (open == g.id) null else g.id },
+                            onClick = {
+                                vm.liveSub = null
+                                vm.liveGroup = if (open == g.id) null else g.id
+                            },
                             onLong = { if (g.isCategory) menuGroup = g.id }
                         )
                     }
                     if (open == g.id) {
-                        val queue = g.items.map { it.ch }
-                        items(g.items, key = { "r:" + g.id + ":" + it.ch.key }) { item ->
-                            val isCur = current?.key == item.ch.key && vm.previewMode
-                            Box(
-                                Modifier
-                                    .padding(start = 10.dp)
-                                    .then(
-                                        if (isCur) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(14.dp))
-                                        else Modifier
-                                    )
-                            ) {
-                                ChannelListRow(item, s, actions) {
-                                    if (isCur) vm.openFullscreen() else vm.playPreview(item.ch, queue)
+                        if (g.children.isNotEmpty()) {
+                            g.children.forEach { c ->
+                                val subOpen = vm.liveSub == c.id
+                                item(key = "h:" + c.id) {
+                                    Box(Modifier.padding(start = 10.dp)) {
+                                        GroupHeader(
+                                            label = c.label,
+                                            count = c.count,
+                                            expanded = subOpen,
+                                            onClick = { vm.liveSub = if (subOpen) null else c.id },
+                                            onLong = {}
+                                        )
+                                    }
                                 }
+                                if (subOpen) rows(vm, c, current, s, actions, 22)
                             }
-                        }
-                        if (g.hasMore) {
-                            item(key = "more:" + g.id) {
-                                LaunchedEffect(g.items.size) { vm.loadMoreGroup() }
-                                Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                                }
-                            }
+                        } else {
+                            rows(vm, g, current, s, actions, 10)
                         }
                     }
                 }
@@ -604,6 +616,41 @@ private fun EpgPanel(vm: MainViewModel, modifier: Modifier) {
                         fontWeight = if (live) FontWeight.Bold else FontWeight.Normal
                     )
                 }
+            }
+        }
+    }
+}
+
+
+private fun androidx.compose.foundation.lazy.LazyListScope.rows(
+    vm: MainViewModel,
+    g: LiveGroup,
+    current: com.willian.tvaberta.data.Channel?,
+    s: com.willian.tvaberta.data.AppSettings,
+    actions: ChannelActions,
+    indent: Int,
+) {
+    val queue = g.items.map { it.ch }
+    items(g.items, key = { "r:" + g.id + ":" + it.ch.key }) { item ->
+        val isCur = current?.key == item.ch.key && vm.previewMode
+        Box(
+            Modifier
+                .padding(start = indent.dp)
+                .then(
+                    if (isCur) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(14.dp))
+                    else Modifier
+                )
+        ) {
+            ChannelListRow(item, s, actions) {
+                if (isCur) vm.openFullscreen() else vm.playPreview(item.ch, queue)
+            }
+        }
+    }
+    if (g.hasMore) {
+        item(key = "more:" + g.id) {
+            LaunchedEffect(g.items.size) { vm.loadMoreGroup() }
+            Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
             }
         }
     }

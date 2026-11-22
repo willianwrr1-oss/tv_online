@@ -679,8 +679,8 @@ object Repo {
 
     // ---------------------------------------------------------------- consultas auxiliares
 
-    fun flt(s: AppSettings, src: String? = null, q: String? = null): Flt =
-        Flt(hideGeo = s.hideGeoBlocked, hideN247 = s.hideNot247, src = src, q = q)
+    fun flt(s: AppSettings, src: String? = null, q: String? = null, kind: Int? = null): Flt =
+        Flt(hideGeo = s.hideGeoBlocked, hideN247 = s.hideNot247, src = src, q = q, kind = kind)
 
     /** Canal + escolhas atuais (nome, grupo e favorito vêm da tabela de escolhas em memória). */
     fun item(ch: Channel, map: Map<String, ChannelState> = _states.value): ChannelItem {

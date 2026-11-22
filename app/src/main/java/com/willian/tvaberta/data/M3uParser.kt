@@ -40,14 +40,9 @@ object M3uParser {
                 pending = true
                 ua = null
                 ref = null
-                val parsedAttrs = HashMap<String, String>(8)
-                var lastAttrEnd = -1
-                for (match in attrRegex.findAll(line)) {
-                    parsedAttrs[match.groupValues[1].lowercase()] = match.groupValues[2]
-                    lastAttrEnd = match.range.last + 1
-                }
-                attrs = parsedAttrs
-                val from = if (lastAttrEnd >= 0) lastAttrEnd else maxOf(0, line.indexOf(':'))
+                val matches = attrRegex.findAll(line).toList()
+                attrs = matches.associate { it.groupValues[1].lowercase() to it.groupValues[2] }
+                val from = if (matches.isNotEmpty()) matches.last().range.last + 1 else maxOf(0, line.indexOf(':'))
                 val comma = line.indexOf(',', from)
                 title = if (comma >= 0) line.substring(comma + 1).trim() else ""
             } else if (line.startsWith("#EXTVLCOPT:", ignoreCase = true)) {

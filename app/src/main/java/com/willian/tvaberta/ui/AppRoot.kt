@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -41,7 +41,7 @@ import com.willian.tvaberta.data.SettingsStore
 private class NavTab(val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
-    NavTab("Canais", Icons.Default.LiveTv),
+    NavTab("Início", Icons.Default.Home),
     NavTab("Guia", Icons.Default.Schedule),
     NavTab("Favoritos", Icons.Default.Star),
     NavTab("Gerenciar", Icons.Default.Tune),
@@ -71,8 +71,10 @@ fun AppRoot(vm: MainViewModel) {
             if (vm.tab != 0 && vm.previewMode && !vm.fullscreen) vm.stopPreview()
         }
 
-        BackHandler(enabled = !playing && (vm.tab != 0 || vm.settingsPage != null)) {
-            if (vm.settingsPage != null) vm.settingsPage = null else vm.tab = 0
+        BackHandler(enabled = !playing && (vm.tab != 0 || vm.settingsPage != null || vm.area != null)) {
+            if (vm.settingsPage != null) vm.settingsPage = null
+            else if (vm.tab != 0) vm.tab = 0
+            else vm.openArea(null)
         }
 
         Box(Modifier.fillMaxSize()) {
@@ -84,6 +86,7 @@ fun AppRoot(vm: MainViewModel) {
                             NavigationBarItem(
                                 selected = vm.tab == i,
                                 onClick = {
+                                    if (i == 0 && vm.tab == 0) vm.openArea(null)
                                     vm.tab = i
                                     if (i == 4) vm.settingsPage = null
                                 },
@@ -100,7 +103,7 @@ fun AppRoot(vm: MainViewModel) {
                         .padding(pad)
                 ) {
                     when (vm.tab) {
-                        0 -> LiveScreen(vm)
+                        0 -> if (vm.area == null) HomeScreen(vm) else LiveScreen(vm)
                         1 -> GuideScreen(vm)
                         2 -> ChannelsScreen(vm, favoritesOnly = true)
                         3 -> ManageScreen(vm)
