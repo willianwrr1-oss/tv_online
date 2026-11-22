@@ -1,5 +1,9 @@
 package com.willian.tvaberta.data
 
+import java.io.BufferedReader
+import java.io.Reader
+import java.io.StringReader
+
 /**
  * Lê listas M3U/M3U8 de canais. Aceita os atributos usuais (#EXTINF com tvg-id, tvg-logo,
  * group-title), os cabeçalhos #EXTVLCOPT (user-agent e referrer) e o estilo Kodi "url|Header=valor".
@@ -14,7 +18,11 @@ object M3uParser {
     private val tagRegex = Regex("\\[[^\\]]*\\]")
     private val spaceRegex = Regex("\\s+")
 
-    fun parse(text: String, sourceId: String, keyPrefix: String = ""): List<Channel> {
+    fun parse(text: String, sourceId: String, keyPrefix: String = ""): List<Channel> =
+        parse(StringReader(text), sourceId, keyPrefix)
+
+    /** Processa diretamente de um Reader, sem exigir que o arquivo inteiro vire uma String. */
+    fun parse(reader: Reader, sourceId: String, keyPrefix: String = ""): List<Channel> {
         val out = LinkedHashMap<String, Channel>()
         var pending = false
         var attrs: Map<String, String> = emptyMap()
@@ -22,7 +30,9 @@ object M3uParser {
         var ua: String? = null
         var ref: String? = null
 
-        for (raw in text.lineSequence()) {
+        val input = if (reader is BufferedReader) reader else reader.buffered()
+        while (true) {
+            val raw = input.readLine() ?: break
             val line = raw.trim()
             if (line.isEmpty()) continue
 
