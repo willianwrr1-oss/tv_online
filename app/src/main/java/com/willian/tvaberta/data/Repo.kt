@@ -4,11 +4,8 @@ import android.content.Context
 import android.util.JsonReader
 import android.util.JsonToken
 import android.util.JsonWriter
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -95,22 +92,6 @@ object Repo {
         return d
     }
 
-    /** Limite defensivo para impedir que uma resposta inesperada encha o armazenamento. */
-    private const val MAX_M3U_BYTES = 512L * 1024L * 1024L
-
-    private fun copyLimited(input: InputStream, output: OutputStream, maxBytes: Long) {
-        val buffer = ByteArray(64 * 1024)
-        var total = 0L
-        while (true) {
-            val n = input.read(buffer)
-            if (n < 0) break
-            total += n
-            if (total > maxBytes) throw IOException("Lista excede o limite de 512 MB")
-            output.write(buffer, 0, n)
-        }
-        output.flush()
-    }
-
     private fun bumpData() {
         _dataVersion.update { it + 1 }
     }
@@ -127,12 +108,26 @@ object Repo {
                 if (!prefs.getBoolean("db_migrated", false)) {
                     try {
                         migrate()
-                        prefs.edit().putBoolean("db_migrated", true).apply()
                     } catch (e: Exception) {
-                        // se falhar, tenta de novo na próxima abertura
+                        // migração é feita uma vez só; o que falhar volta a vir das listas em cache
                     }
+                    prefs.edit().putBoolean("db_migrated", true).apply()
                 } else {
                     _packs.value = loadPacks()
+                }
+                // Banco vazio (ex.: migração incompleta): reconstrói a partir das listas já baixadas.
+                if (db.count() == 0) {
+                    for (src in _sources.value) {
+                        if (!src.enabled) continue
+                        val f = File(listsDir(), src.id + ".m3u")
+                        if (f.exists()) {
+                            try {
+                                importSourceFile(src.id, f)
+                            } catch (e: Exception) {
+                                // lista com problema: segue com as outras
+                            }
+                        }
+                    }
                 }
                 _states.value = db.loadStates()
             }
@@ -144,12 +139,17 @@ object Repo {
 
     private fun migrate() {
       synchronized(wlock) {
-        db.clearAll()
         // 1) listas baixadas
         for (src in _sources.value) {
             if (!src.enabled) continue
             val f = File(listsDir(), src.id + ".m3u")
-            if (f.exists()) importSourceFile(src.id, f)
+            if (f.exists()) {
+                try {
+                    importSourceFile(src.id, f)
+                } catch (e: Exception) {
+                    // segue com as outras listas
+                }
+            }
         }
         // 2) canais à mão e pacotes de arquivos importados
         val packOf = HashMap<String, String>()
@@ -210,10 +210,14 @@ object Repo {
         _packs.value = oldPacks
         persistPacks()
         // 3) escolhas do usuário
-        val old = loadStatesOld()
-        if (old.isNotEmpty()) {
-            val grp = old.filter { it.value.customGroup != null }.keys
-            db.saveStates(old, grp)
+        try {
+            val old = loadStatesOld()
+            if (old.isNotEmpty()) {
+                val grp = old.filter { it.value.customGroup != null }.keys
+                db.saveStates(old, grp)
+            }
+        } catch (e: Exception) {
+            // escolhas antigas ilegíveis
         }
       }
     }
@@ -247,23 +251,14 @@ object Repo {
     /** Lê um arquivo M3U de uma fonte para dentro do banco (troca o que havia dessa fonte). */
     private fun importSourceFile(id: String, f: File) {
         synchronized(wlock) {
-            try {
-                f.bufferedReader().use { r ->
-                    db.inTx {
-                        db.deleteSrc(id)
-                        var parsed = 0
-                        M3uParser.parseLines(r.lineSequence(), id, "") { c ->
-                            db.put(c, null, true)
-                            parsed++
-                        }
-                        // Uma resposta HTML, arquivo truncado ou lista vazia não apaga a lista válida anterior.
-                        if (parsed == 0) throw IOException("A lista não contém canais válidos")
-                        db.reapplyCustomGroups()
-                    }
+            f.bufferedReader().use { r ->
+                db.inTx {
+                    db.deleteSrc(id)
+                    M3uParser.parseLines(r.lineSequence(), id, "") { c -> db.put(c, null, true) }
+                    db.reapplyCustomGroups()
                 }
-            } finally {
-                db.releaseStatements()
             }
+            db.releaseStatements()
         }
     }
 
@@ -295,55 +290,38 @@ object Repo {
         try {
             ensureLoaded()
             withContext(Dispatchers.IO) {
-                val coroutineContext = currentCoroutineContext()
                 for (src in _sources.value) {
-                    coroutineContext.ensureActive()
                     if (!src.enabled) continue
-                    val tmp = File(listsDir(), src.id + ".tmp")
                     try {
                         val req = Request.Builder()
                             .url(src.url)
                             .header("User-Agent", "TVAberta/1.0")
                             .build()
+                        val target = File(listsDir(), src.id + ".m3u")
+                        val tmp = File(listsDir(), src.id + ".tmp")
                         client.newCall(req).execute().use { r ->
                             if (!r.isSuccessful) throw IOException("HTTP " + r.code)
                             val body = r.body ?: throw IOException("vazio")
-                            if (body.contentLength() > MAX_M3U_BYTES) {
-                                throw IOException("Lista excede o limite de 512 MB")
-                            }
-                            body.byteStream().use { input ->
-                                tmp.outputStream().buffered().use { output ->
-                                    copyLimited(input, output, MAX_M3U_BYTES)
-                                }
-                            }
+                            body.byteStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
                         }
-
                         val head = tmp.bufferedReader().use { r ->
                             val buf = CharArray(4000)
                             val n = r.read(buf)
                             if (n > 0) String(buf, 0, n) else ""
                         }
-                        if (!head.contains("#EXTM3U", ignoreCase = true)) {
+                        if (!head.contains("#EXTM3U")) {
+                            tmp.delete()
                             throw IOException("não é uma lista M3U")
                         }
-
-                        // Importa o temporário primeiro. Se o parser falhar, a transação é revertida
-                        // e o cache anterior continua intacto.
-                        importSourceFile(src.id, tmp)
-
-                        val target = File(listsDir(), src.id + ".m3u")
                         if (!tmp.renameTo(target)) {
                             tmp.copyTo(target, overwrite = true)
                             tmp.delete()
                         }
+                        importSourceFile(src.id, target)
                         bumpData()
                         ok++
-                    } catch (e: CancellationException) {
-                        throw e
                     } catch (e: Exception) {
                         fail++
-                    } finally {
-                        if (tmp.exists()) tmp.delete()
                     }
                 }
             }
