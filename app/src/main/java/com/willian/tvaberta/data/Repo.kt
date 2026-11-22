@@ -1,45 +1,56 @@
 package com.willian.tvaberta.data
 
 import android.content.Context
+import android.util.JsonReader
+import android.util.JsonToken
+import android.util.JsonWriter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.Reader
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-/** Arquivo M3U importado: guarda quais canais vieram dele, para poder excluir o pacote todo. */
-data class ImportPack(val id: String, val name: String, val keys: List<String>, val time: Long)
+/** Arquivo M3U importado: os canais dele ficam marcados no banco com o id do pacote. */
+data class ImportPack(val id: String, val name: String, val time: Long)
 
 /** Pacote exibido na tela: uma fonte (link/país), um arquivo importado ou "meus canais". */
-data class PackInfo(val id: String, val name: String, val kind: String, val channels: List<Channel>, val time: Long)
+data class PackInfo(val id: String, val name: String, val kind: String, val count: Int, val time: Long)
 
 /**
- * Guarda tudo o que o app sabe sobre canais: as listas baixadas (cache em arquivos), as escolhas do
- * usuário (desativar, excluir, favoritar, renomear) e os canais adicionados à mão.
+ * Guarda tudo o que o app sabe sobre canais. O catálogo fica num banco SQLite (aguenta centenas de
+ * milhares de canais); as escolhas do usuário ficam em memória e no banco; as listas baixadas ficam
+ * em arquivos de cache.
  */
 object Repo {
-    /** Proteção contra respostas acidentais gigantes ou downloads sem limite. Ajustável conforme necessidade. */
-    private const val MAX_LIST_BYTES = 256L * 1024L * 1024L
-    private const val COPY_BUFFER_SIZE = 64 * 1024
-
     private lateinit var ctx: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val dbExec = Executors.newSingleThreadExecutor()
+    private val loadLock = Mutex()
+    private val wlock = Any()
+    private var loaded = false
 
-    private val _channels = MutableStateFlow<List<Channel>>(emptyList())
-    val channels: StateFlow<List<Channel>> = _channels
+    private val dbLazy = lazy { ChannelDb(ctx) }
+    val db: ChannelDb get() = dbLazy.value
 
     private val _states = MutableStateFlow<Map<String, ChannelState>>(emptyMap())
     val states: StateFlow<Map<String, ChannelState>> = _states
@@ -50,10 +61,19 @@ object Repo {
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing
 
-    private var manual: List<Channel> = emptyList()
+    private val _ready = MutableStateFlow(false)
+    val ready: StateFlow<Boolean> = _ready
 
     private val _packs = MutableStateFlow<List<ImportPack>>(emptyList())
     val packs: StateFlow<List<ImportPack>> = _packs
+
+    /** Sobe quando o catálogo ou a visibilidade dos canais muda (refaz grupos e contagens). */
+    private val _dataVersion = MutableStateFlow(0)
+    val dataVersion: StateFlow<Int> = _dataVersion
+
+    /** Sobe a cada escolha gravada (favoritos, recentes, contagem de reproduções). */
+    private val _stateVersion = MutableStateFlow(0)
+    val stateVersion: StateFlow<Int> = _stateVersion
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -67,9 +87,6 @@ object Repo {
         ctx = c.applicationContext
         _sources.value = loadSources()
         if (sourcesDirty) persistSources()
-        _states.value = loadStates()
-        manual = loadManual()
-        _packs.value = loadPacks()
     }
 
     private fun listsDir(): File {
@@ -78,171 +95,130 @@ object Repo {
         return d
     }
 
-    // ---------------------------------------------------------------- leitura das listas
+    /** Limite defensivo para impedir que uma resposta inesperada encha o armazenamento. */
+    private const val MAX_M3U_BYTES = 512L * 1024L * 1024L
 
-    suspend fun reload() = withContext(Dispatchers.Default) {
-        val map = LinkedHashMap<String, Channel>()
+    private fun copyLimited(input: InputStream, output: OutputStream, maxBytes: Long) {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) throw IOException("Lista excede o limite de 512 MB")
+            output.write(buffer, 0, n)
+        }
+        output.flush()
+    }
+
+    private fun bumpData() {
+        _dataVersion.update { it + 1 }
+    }
+
+    // ---------------------------------------------------------------- abertura e migração
+
+    /** Abre o banco; na primeira vez traz os dados do formato antigo (listas em cache, canais à mão, escolhas). */
+    suspend fun ensureLoaded() {
+        if (loaded) return
+        loadLock.withLock {
+            if (loaded) return
+            withContext(Dispatchers.IO) {
+                val prefs = ctx.getSharedPreferences("repo", Context.MODE_PRIVATE)
+                if (!prefs.getBoolean("db_migrated", false)) {
+                    try {
+                        migrate()
+                        prefs.edit().putBoolean("db_migrated", true).apply()
+                    } catch (e: Exception) {
+                        // se falhar, tenta de novo na próxima abertura
+                    }
+                } else {
+                    _packs.value = loadPacks()
+                }
+                _states.value = db.loadStates()
+            }
+            loaded = true
+            _ready.value = true
+            bumpData()
+        }
+    }
+
+    private fun migrate() {
+      synchronized(wlock) {
+        db.clearAll()
+        // 1) listas baixadas
         for (src in _sources.value) {
             if (!src.enabled) continue
             val f = File(listsDir(), src.id + ".m3u")
-            if (!f.exists()) continue
-            val parsed = try {
-                f.bufferedReader(Charsets.UTF_8).use { reader ->
-                    M3uParser.parse(reader, src.id)
+            if (f.exists()) importSourceFile(src.id, f)
+        }
+        // 2) canais à mão e pacotes de arquivos importados
+        val packOf = HashMap<String, String>()
+        val oldPacks = ArrayList<ImportPack>()
+        val pf = File(ctx.filesDir, "packs.json")
+        if (pf.exists()) {
+            try {
+                val arr = JSONArray(pf.readText())
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val id = o.getString("id")
+                    oldPacks.add(ImportPack(id, o.optString("name", "Importado"), o.optLong("time", 0L)))
+                    val ka = o.optJSONArray("keys")
+                    if (ka != null) for (j in 0 until ka.length()) packOf[ka.getString(j)] = id
                 }
             } catch (e: Exception) {
-                emptyList()
+                // pacotes antigos ilegíveis: os canais viram "Meus canais"
             }
-            for (c in parsed) merge(map, c)
         }
-        for (c in manual) merge(map, c)
-        _channels.value = map.values.toList()
-    }
-
-    private fun merge(map: MutableMap<String, Channel>, c: Channel) {
-        val ex = map[c.key]
-        if (ex == null) {
-            map[c.key] = c
-        } else {
-            map[c.key] = ex.copy(urls = (ex.urls + c.urls).distinct())
-        }
-    }
-
-    /** Baixa de novo todas as listas ativas. Devolve quantas deram certo e quantas falharam. */
-    suspend fun refresh(): RefreshResult {
-        if (_refreshing.value) return RefreshResult(0, 0)
-        _refreshing.value = true
-        var ok = 0
-        var fail = 0
-        try {
-            withContext(Dispatchers.IO) {
-                for (src in _sources.value) {
-                    if (!src.enabled) continue
-                    try {
-                        val req = Request.Builder()
-                            .url(src.url)
-                            .header("User-Agent", "TVAberta/1.0")
-                            .build()
-                        client.newCall(req).execute().use { r ->
-                            if (!r.isSuccessful) throw IOException("HTTP " + r.code)
-                            val body = r.body ?: throw IOException("vazio")
-                            val declaredLength = body.contentLength()
-                            if (declaredLength > MAX_LIST_BYTES) {
-                                throw IOException("Lista excede o limite de ${MAX_LIST_BYTES / (1024 * 1024)} MB")
-                            }
-
-                            val target = File(listsDir(), src.id + ".m3u")
-                            val temp = File(listsDir(), src.id + ".m3u.tmp")
-                            var total = 0L
-                            try {
-                                BufferedInputStream(body.byteStream()).use { input ->
-                                    BufferedOutputStream(temp.outputStream(), COPY_BUFFER_SIZE).use { output ->
-                                        val buffer = ByteArray(COPY_BUFFER_SIZE)
-                                        while (true) {
-                                            val read = input.read(buffer)
-                                            if (read < 0) break
-                                            total += read
-                                            if (total > MAX_LIST_BYTES) {
-                                                throw IOException("Lista excede o limite de ${MAX_LIST_BYTES / (1024 * 1024)} MB")
-                                            }
-                                            output.write(buffer, 0, read)
-                                        }
-                                    }
-                                }
-
-                                // Valida o arquivo temporário antes de substituir o cache anterior.
-                                val validM3u = temp.bufferedReader(Charsets.UTF_8).use { reader ->
-                                    val first = CharArray(8192)
-                                    val count = reader.read(first)
-                                    count > 0 && String(first, 0, count).contains("#EXTM3U", ignoreCase = true)
-                                }
-                                if (!validM3u) throw IOException("não é uma lista M3U")
-
-                                if (!temp.renameTo(target)) {
-                                    temp.copyTo(target, overwrite = true)
-                                    temp.delete()
-                                }
-                            } catch (e: Exception) {
-                                temp.delete()
-                                throw e
-                            }
-                        }
-                        ok++
-                    } catch (e: Exception) {
-                        fail++
+        val mf = File(ctx.filesDir, "manual.json")
+        if (mf.exists()) {
+            try {
+                val arr = JSONArray(mf.readText())
+                db.inTx {
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        val groups = ArrayList<String>()
+                        val ga = o.optJSONArray("groups")
+                        if (ga != null) for (j in 0 until ga.length()) groups.add(ga.getString(j))
+                        val urls = ArrayList<String>()
+                        val ua = o.optJSONArray("urls")
+                        if (ua != null) for (j in 0 until ua.length()) urls.add(ua.getString(j))
+                        if (urls.isEmpty()) continue
+                        val key = o.getString("key")
+                        db.put(
+                            Channel(
+                                key = key,
+                                name = o.getString("name"),
+                                groups = if (groups.isEmpty()) listOf("Manual") else groups,
+                                logo = o.optString("logo", "").ifBlank { null },
+                                urls = urls,
+                                userAgent = o.optString("ua", "").ifBlank { null },
+                                referrer = o.optString("ref", "").ifBlank { null },
+                                quality = o.optString("q", "").ifBlank { null },
+                                geoBlocked = false,
+                                not247 = false,
+                                sourceId = "manual",
+                            ),
+                            packOf[key], false
+                        )
                     }
                 }
+                db.releaseStatements()
+            } catch (e: Exception) {
+                // arquivo antigo ilegível
             }
-            reload()
-            if (ok > 0) {
-                SettingsStore.update { it.copy(lastRefresh = System.currentTimeMillis()) }
-            }
-        } finally {
-            _refreshing.value = false
         }
-        return RefreshResult(ok, fail)
-    }
-
-    fun clearListCache() {
-        listsDir().listFiles()?.forEach { it.delete() }
-        scope.launch { reload() }
-    }
-
-    // ---------------------------------------------------------------- escolhas do usuário
-
-    fun updateStates(keys: Collection<String>, f: (ChannelState) -> ChannelState) {
-        if (keys.isEmpty()) return
-        _states.update { m ->
-            val mm = HashMap<String, ChannelState>(m)
-            for (k in keys) {
-                val n = f(mm[k] ?: ChannelState())
-                if (n == ChannelState()) mm.remove(k) else mm[k] = n
-            }
-            mm
-        }
-        persistStates()
-    }
-
-    fun updateState(key: String, f: (ChannelState) -> ChannelState) = updateStates(listOf(key), f)
-
-    /** Volta a lista de canais ao estado inicial: fontes originais, sem canais manuais e sem escolhas. */
-    fun resetChannelList() {
-        resetSources()
-        manual = emptyList()
-        persistManual()
-        _packs.value = emptyList()
+        _packs.value = oldPacks
         persistPacks()
-        _states.value = emptyMap()
-        persistStates()
-        scope.launch { reload() }
-    }
-
-    fun resetHistory() {
-        val keys = _states.value.keys.toList()
-        updateStates(keys) { it.copy(plays = 0, lastPlayed = 0L) }
-    }
-
-    private fun persistStates() {
-        scope.launch {
-            synchronized(this@Repo) {
-                val o = JSONObject()
-                for ((k, v) in _states.value) {
-                    val e = JSONObject()
-                    if (v.disabled) e.put("d", true)
-                    if (v.deleted) e.put("x", true)
-                    if (v.favorite) e.put("f", true)
-                    if (!v.customName.isNullOrBlank()) e.put("n", v.customName)
-                    if (v.plays > 0) e.put("p", v.plays)
-                    if (v.lastPlayed > 0L) e.put("l", v.lastPlayed)
-                    if (!v.customGroup.isNullOrBlank()) e.put("g", v.customGroup)
-                    o.put(k, e)
-                }
-                writeAtomic(File(ctx.filesDir, "states.json"), o.toString())
-            }
+        // 3) escolhas do usuário
+        val old = loadStatesOld()
+        if (old.isNotEmpty()) {
+            val grp = old.filter { it.value.customGroup != null }.keys
+            db.saveStates(old, grp)
         }
+      }
     }
 
-    private fun loadStates(): Map<String, ChannelState> {
+    private fun loadStatesOld(): Map<String, ChannelState> {
         val f = File(ctx.filesDir, "states.json")
         if (!f.exists()) return emptyMap()
         return try {
@@ -266,6 +242,192 @@ object Repo {
         }
     }
 
+    // ---------------------------------------------------------------- leitura das listas
+
+    /** Lê um arquivo M3U de uma fonte para dentro do banco (troca o que havia dessa fonte). */
+    private fun importSourceFile(id: String, f: File) {
+        synchronized(wlock) {
+            try {
+                f.bufferedReader().use { r ->
+                    db.inTx {
+                        db.deleteSrc(id)
+                        var parsed = 0
+                        M3uParser.parseLines(r.lineSequence(), id, "") { c ->
+                            db.put(c, null, true)
+                            parsed++
+                        }
+                        // Uma resposta HTML, arquivo truncado ou lista vazia não apaga a lista válida anterior.
+                        if (parsed == 0) throw IOException("A lista não contém canais válidos")
+                        db.reapplyCustomGroups()
+                    }
+                }
+            } finally {
+                db.releaseStatements()
+            }
+        }
+    }
+
+    /** Refaz o catálogo a partir das listas em cache. */
+    suspend fun reload() = withContext(Dispatchers.IO) {
+        for (src in _sources.value) {
+            if (!src.enabled) {
+                db.deleteSrc(src.id)
+                continue
+            }
+            val f = File(listsDir(), src.id + ".m3u")
+            if (f.exists()) {
+                try {
+                    importSourceFile(src.id, f)
+                } catch (e: Exception) {
+                    // lista com problema: segue com as outras
+                }
+            }
+        }
+        bumpData()
+    }
+
+    /** Baixa de novo todas as listas ativas. Devolve quantas deram certo e quantas falharam. */
+    suspend fun refresh(): RefreshResult {
+        if (_refreshing.value) return RefreshResult(0, 0)
+        _refreshing.value = true
+        var ok = 0
+        var fail = 0
+        try {
+            ensureLoaded()
+            withContext(Dispatchers.IO) {
+                val coroutineContext = currentCoroutineContext()
+                for (src in _sources.value) {
+                    coroutineContext.ensureActive()
+                    if (!src.enabled) continue
+                    val tmp = File(listsDir(), src.id + ".tmp")
+                    try {
+                        val req = Request.Builder()
+                            .url(src.url)
+                            .header("User-Agent", "TVAberta/1.0")
+                            .build()
+                        client.newCall(req).execute().use { r ->
+                            if (!r.isSuccessful) throw IOException("HTTP " + r.code)
+                            val body = r.body ?: throw IOException("vazio")
+                            if (body.contentLength() > MAX_M3U_BYTES) {
+                                throw IOException("Lista excede o limite de 512 MB")
+                            }
+                            body.byteStream().use { input ->
+                                tmp.outputStream().buffered().use { output ->
+                                    copyLimited(input, output, MAX_M3U_BYTES)
+                                }
+                            }
+                        }
+
+                        val head = tmp.bufferedReader().use { r ->
+                            val buf = CharArray(4000)
+                            val n = r.read(buf)
+                            if (n > 0) String(buf, 0, n) else ""
+                        }
+                        if (!head.contains("#EXTM3U", ignoreCase = true)) {
+                            throw IOException("não é uma lista M3U")
+                        }
+
+                        // Importa o temporário primeiro. Se o parser falhar, a transação é revertida
+                        // e o cache anterior continua intacto.
+                        importSourceFile(src.id, tmp)
+
+                        val target = File(listsDir(), src.id + ".m3u")
+                        if (!tmp.renameTo(target)) {
+                            tmp.copyTo(target, overwrite = true)
+                            tmp.delete()
+                        }
+                        bumpData()
+                        ok++
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        fail++
+                    } finally {
+                        if (tmp.exists()) tmp.delete()
+                    }
+                }
+            }
+            if (ok > 0) {
+                SettingsStore.update { it.copy(lastRefresh = System.currentTimeMillis()) }
+            }
+        } finally {
+            _refreshing.value = false
+        }
+        return RefreshResult(ok, fail)
+    }
+
+    fun clearListCache() {
+        listsDir().listFiles()?.forEach { it.delete() }
+        scope.launch {
+            ensureLoaded()
+            withContext(Dispatchers.IO) {
+                for (src in _sources.value) db.deleteSrc(src.id)
+            }
+            bumpData()
+        }
+    }
+
+    // ---------------------------------------------------------------- escolhas do usuário
+
+    fun updateStates(keys: Collection<String>, f: (ChannelState) -> ChannelState) {
+        if (keys.isEmpty()) return
+        val changes = HashMap<String, ChannelState?>()
+        val groupChanged = HashSet<String>()
+        var heavy = false
+        synchronized(this) {
+            val old = _states.value
+            val mm = HashMap<String, ChannelState>(old)
+            for (k in keys) {
+                val o = old[k] ?: ChannelState()
+                val n = f(o)
+                if (n == o) continue
+                if (n == ChannelState()) {
+                    mm.remove(k)
+                    changes[k] = null
+                } else {
+                    mm[k] = n
+                    changes[k] = n
+                }
+                if (o.customGroup != n.customGroup) groupChanged.add(k)
+                if (o.disabled != n.disabled || o.deleted != n.deleted || o.customGroup != n.customGroup ||
+                    o.customName != n.customName
+                ) heavy = true
+            }
+            if (changes.isEmpty()) return
+            _states.value = mm
+        }
+        val h = heavy
+        dbExec.execute {
+            try {
+                db.saveStates(changes, groupChanged)
+            } catch (e: Exception) {
+                // gravação é "melhor esforço"
+            }
+            if (h) bumpData()
+            _stateVersion.update { it + 1 }
+        }
+    }
+
+    fun updateState(key: String, f: (ChannelState) -> ChannelState) = updateStates(listOf(key), f)
+
+    /** Volta a lista de canais ao estado inicial: fontes originais, sem canais manuais e sem escolhas. */
+    fun resetChannelList() {
+        resetSources()
+        _packs.value = emptyList()
+        persistPacks()
+        _states.value = emptyMap()
+        scope.launch {
+            ensureLoaded()
+            withContext(Dispatchers.IO) { db.clearAll() }
+            reload()
+        }
+    }
+
+    fun resetHistory() {
+        val keys = _states.value.filter { it.value.plays > 0 || it.value.lastPlayed > 0L }.keys.toList()
+        updateStates(keys) { it.copy(plays = 0, lastPlayed = 0L) }
+    }
+
     // ---------------------------------------------------------------- fontes (listas)
 
     fun addSource(id: String, name: String, url: String) {
@@ -283,23 +445,43 @@ object Repo {
     /** Volta a lista de fontes para as quatro originais; apaga as listas baixadas das outras. */
     fun resetSources() {
         val keep = DefaultSources.list.map { it.id }.toSet()
-        _sources.value.filter { it.id !in keep }.forEach { File(listsDir(), it.id + ".m3u").delete() }
+        val gone = _sources.value.filter { it.id !in keep }
+        gone.forEach { File(listsDir(), it.id + ".m3u").delete() }
         _sources.value = DefaultSources.list
         persistSources()
-        scope.launch { reload() }
+        scope.launch {
+            ensureLoaded()
+            withContext(Dispatchers.IO) { gone.forEach { db.deleteSrc(it.id) } }
+            reload()
+        }
     }
 
     fun removeSource(id: String) {
         _sources.update { list -> list.filter { it.id != id } }
         File(listsDir(), "$id.m3u").delete()
         persistSources()
-        scope.launch { reload() }
+        scope.launch {
+            ensureLoaded()
+            withContext(Dispatchers.IO) { db.inTx { db.deleteSrc(id) } }
+            bumpData()
+        }
     }
 
     fun setSourceEnabled(id: String, enabled: Boolean) {
         _sources.update { list -> list.map { if (it.id == id) it.copy(enabled = enabled) else it } }
         persistSources()
-        scope.launch { reload() }
+        scope.launch {
+            ensureLoaded()
+            withContext(Dispatchers.IO) {
+                if (!enabled) {
+                    db.inTx { db.deleteSrc(id) }
+                } else {
+                    val f = File(listsDir(), "$id.m3u")
+                    if (f.exists()) importSourceFile(id, f)
+                }
+            }
+            bumpData()
+        }
     }
 
     /** Nome mostrado na guia de origem: fonte cadastrada, arquivo importado ou "Meus canais". */
@@ -311,10 +493,11 @@ object Repo {
     fun hasCache(id: String): Boolean = File(listsDir(), "$id.m3u").exists()
 
     private fun persistSources() {
+        val snap = _sources.value
         scope.launch {
             synchronized(this@Repo) {
                 val arr = JSONArray()
-                for (s in _sources.value) {
+                for (s in snap) {
                     arr.put(
                         JSONObject()
                             .put("id", s.id)
@@ -361,7 +544,7 @@ object Repo {
         return list
     }
 
-    // ---------------------------------------------------------------- canais manuais
+    // ---------------------------------------------------------------- canais manuais e importados
 
     fun addManual(name: String, url: String, group: String, logo: String) {
         val key = "m:" + UUID.randomUUID().toString().take(8)
@@ -378,65 +561,62 @@ object Repo {
             not247 = false,
             sourceId = "manual",
         )
-        manual = manual + ch
-        persistManual()
-        scope.launch { reload() }
+        scope.launch {
+            ensureLoaded()
+            synchronized(wlock) {
+                db.inTx { db.put(ch, null, false) }
+                db.releaseStatements()
+            }
+            bumpData()
+        }
     }
 
-    /** Importa um arquivo M3U do aparelho como canais manuais. Devolve quantos canais novos entraram. */
-    fun norm(s: String): String =
-        java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
-            .replace(Regex("\\p{M}+"), "")
-            .replace(Regex("[^a-z0-9]+"), "")
+    fun norm(s: String): String = ChannelDb.norm(s)
 
-    fun normUrl(u: String): String =
-        u.trim().lowercase().removePrefix("https://").removePrefix("http://").trimEnd('/')
+    fun normUrl(u: String): String = ChannelDb.normUrl(u)
 
     /**
      * Importa uma lista M3U ignorando o que o app já tem (mesmo tvg-id, mesmo nome ou mesmo link,
-     * em qualquer fonte, ativa ou não). Devolve (novos, ignorados).
+     * em qualquer fonte, ativa ou não). Lê aos poucos, sem carregar o arquivo inteiro.
+     * Devolve (novos, ignorados).
      */
-    fun importM3u(text: String, listName: String): Pair<Int, Int> {
-        val parsed = M3uParser.parse(text, "manual", keyPrefix = "m:")
-        val have = _channels.value + manual
-        val names = HashSet<String>()
-        val ids = HashSet<String>()
-        val urls = HashSet<String>()
-        for (c in have) {
-            names.add(norm(c.name))
-            if (c.key.contains("id:")) ids.add(c.key.substringAfter("id:").lowercase())
-            for (u in c.urls) urls.add(normUrl(u))
-        }
-        val add = ArrayList<Channel>()
+    fun importM3u(reader: Reader, listName: String): Pair<Int, Int> {
+        val packId = System.currentTimeMillis().toString()
+        var added = 0
         var skipped = 0
-        for (c in parsed) {
-            val id = if (c.key.contains("id:")) c.key.substringAfter("id:").lowercase() else null
-            val dup = norm(c.name) in names ||
-                (id != null && id in ids) ||
-                c.urls.any { normUrl(it) in urls }
-            if (dup) {
-                skipped++
-            } else {
-                add.add(c)
-                names.add(norm(c.name))
-                if (id != null) ids.add(id)
-                for (u in c.urls) urls.add(normUrl(u))
+        val seen = HashSet<String>()
+        synchronized(wlock) {
+            reader.buffered().use { r ->
+                db.inTx {
+                    M3uParser.parseLines(r.lineSequence(), "manual", "m:") { c ->
+                        if (!seen.add(c.key)) {
+                            db.put(c, packId, true)
+                        } else {
+                            val nn = ChannelDb.norm(c.name)
+                            val un = ChannelDb.normUrl(c.urls.firstOrNull() ?: "")
+                            val idl = ChannelDb.idOf(c.key)
+                            if (db.exists(nn, un, idl)) {
+                                skipped++
+                            } else if (db.put(c, packId, false)) {
+                                added++
+                            } else {
+                                skipped++
+                            }
+                        }
+                    }
+                }
             }
+            db.releaseStatements()
         }
-        if (add.isNotEmpty()) {
-            manual = manual + add
-            _packs.value = _packs.value + ImportPack(
-                id = System.currentTimeMillis().toString(),
-                name = listName,
-                keys = add.map { it.key },
-                time = System.currentTimeMillis()
-            )
+        if (added > 0) {
+            _packs.value = _packs.value + ImportPack(packId, listName, System.currentTimeMillis())
             persistPacks()
-            persistManual()
-            scope.launch { reload() }
+            bumpData()
         }
-        return Pair(add.size, skipped)
+        return Pair(added, skipped)
     }
+
+    fun importM3u(text: String, listName: String): Pair<Int, Int> = importM3u(java.io.StringReader(text), listName)
 
     private fun persistPacks() {
         val snap = _packs.value
@@ -448,26 +628,22 @@ object Repo {
                     o.put("id", p.id)
                     o.put("name", p.name)
                     o.put("time", p.time)
-                    o.put("keys", JSONArray(p.keys))
                     arr.put(o)
                 }
-                writeAtomic(File(ctx.filesDir, "packs.json"), arr.toString())
+                writeAtomic(File(ctx.filesDir, "packs2.json"), arr.toString())
             }
         }
     }
 
     private fun loadPacks(): List<ImportPack> {
-        val f = File(ctx.filesDir, "packs.json")
+        val f = File(ctx.filesDir, "packs2.json")
         if (!f.exists()) return emptyList()
         return try {
             val arr = JSONArray(f.readText())
             val list = ArrayList<ImportPack>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
-                val ka = o.optJSONArray("keys")
-                val keys = ArrayList<String>()
-                if (ka != null) for (j in 0 until ka.length()) keys.add(ka.getString(j))
-                list.add(ImportPack(o.getString("id"), o.optString("name", "Importado"), keys, o.optLong("time", 0L)))
+                list.add(ImportPack(o.getString("id"), o.optString("name", "Importado"), o.optLong("time", 0L)))
             }
             list
         } catch (e: Exception) {
@@ -477,23 +653,23 @@ object Repo {
 
     /** Todos os pacotes de canais: fontes (link/país), arquivos importados e os canais "à mão". */
     fun packInfos(): List<PackInfo> {
-        val st = _states.value
-        fun alive(list: List<Channel>) = list.filter { st[it.key]?.deleted != true }
         val out = ArrayList<PackInfo>()
         for (src in _sources.value) {
-            out.add(PackInfo("src:" + src.id, src.name, "source", alive(_channels.value.filter { it.sourceId == src.id }), 0L))
+            out.add(PackInfo("src:" + src.id, src.name, "source", db.countSrc(src.id), 0L))
         }
-        val packed = HashSet<String>()
         for (p in _packs.value) {
-            val ks = p.keys.toSet()
-            packed.addAll(ks)
-            out.add(PackInfo("pk:" + p.id, p.name, "file", alive(manual.filter { it.key in ks }), p.time))
+            out.add(PackInfo("pk:" + p.id, p.name, "file", db.countPack(p.id), p.time))
         }
-        val rest = manual.filter { it.key !in packed }
-        if (rest.isNotEmpty()) {
-            out.add(PackInfo("rest", "Meus canais (à mão ou importados antes)", "rest", alive(rest), 0L))
-        }
+        val rest = db.countManualUnpacked()
+        if (rest > 0) out.add(PackInfo("rest", "Meus canais (à mão ou importados antes)", "rest", rest, 0L))
         return out
+    }
+
+    /** Alguns canais do pacote, para mostrar o conteúdo. */
+    fun packChannels(info: PackInfo, limit: Int): List<Channel> = when (info.kind) {
+        "source" -> db.listSrc(info.id.removePrefix("src:"), limit)
+        "file" -> db.listPack(info.id.removePrefix("pk:"), limit)
+        else -> db.listManualUnpacked(limit)
     }
 
     /** Exclui o pacote inteiro de uma vez. Fonte: remove a fonte. Arquivo: apaga os canais dele. */
@@ -502,81 +678,269 @@ object Repo {
             removeSource(info.id.removePrefix("src:"))
             return
         }
-        val kill: Set<String>
-        if (info.kind == "file") {
-            val p = _packs.value.firstOrNull { "pk:" + it.id == info.id } ?: return
-            kill = p.keys.toSet()
-            _packs.value = _packs.value - p
-            persistPacks()
-        } else {
-            val packed = _packs.value.flatMap { it.keys }.toSet()
-            kill = manual.filter { it.key !in packed }.map { it.key }.toSet()
-        }
-        manual = manual.filter { it.key !in kill }
-        persistManual()
-        _states.value = _states.value.filterKeys { it !in kill }
-        persistStates()
-        scope.launch { reload() }
-    }
-
-    private fun persistManual() {
-        val snap = manual
         scope.launch {
-            synchronized(this@Repo) {
-                val arr = JSONArray()
-                for (c in snap) {
-                    val o = JSONObject()
-                    o.put("key", c.key)
-                    o.put("name", c.name)
-                    o.put("groups", JSONArray(c.groups))
-                    o.put("urls", JSONArray(c.urls))
-                    if (c.logo != null) o.put("logo", c.logo)
-                    if (c.userAgent != null) o.put("ua", c.userAgent)
-                    if (c.referrer != null) o.put("ref", c.referrer)
-                    o.put("sid", c.sourceId)
-                    if (c.quality != null) o.put("q", c.quality)
-                    arr.put(o)
+            ensureLoaded()
+            val kill: List<String> = withContext(Dispatchers.IO) {
+                if (info.kind == "file") {
+                    val pid = info.id.removePrefix("pk:")
+                    val ks = db.keysOfPack(pid)
+                    db.inTx { db.deletePack(pid) }
+                    _packs.update { l -> l.filter { it.id != pid } }
+                    persistPacks()
+                    ks
+                } else {
+                    val ks = db.keysOfManualUnpacked()
+                    db.inTx { db.deleteManualUnpacked() }
+                    ks
                 }
-                writeAtomic(File(ctx.filesDir, "manual.json"), arr.toString())
             }
+            if (kill.isNotEmpty()) updateStates(kill) { ChannelState() }
+            bumpData()
         }
     }
 
-    private fun loadManual(): List<Channel> {
-        val f = File(ctx.filesDir, "manual.json")
-        if (!f.exists()) return emptyList()
-        return try {
-            val arr = JSONArray(f.readText())
-            val list = ArrayList<Channel>()
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                val groups = ArrayList<String>()
-                val ga = o.optJSONArray("groups")
-                if (ga != null) for (j in 0 until ga.length()) groups.add(ga.getString(j))
-                val urls = ArrayList<String>()
-                val ua = o.optJSONArray("urls")
-                if (ua != null) for (j in 0 until ua.length()) urls.add(ua.getString(j))
-                if (urls.isEmpty()) continue
-                list.add(
-                    Channel(
-                        key = o.getString("key"),
-                        name = o.getString("name"),
-                        groups = if (groups.isEmpty()) listOf("Manual") else groups,
-                        logo = o.optString("logo", "").ifBlank { null },
-                        urls = urls,
-                        userAgent = o.optString("ua", "").ifBlank { null },
-                        referrer = o.optString("ref", "").ifBlank { null },
-                        quality = o.optString("q", "").ifBlank { null },
-                        geoBlocked = false,
-                        not247 = false,
-                        sourceId = "manual",
-                    )
-                )
-            }
-            list
-        } catch (e: Exception) {
-            emptyList()
+    // ---------------------------------------------------------------- consultas auxiliares
+
+    fun flt(s: AppSettings, src: String? = null, q: String? = null): Flt =
+        Flt(hideGeo = s.hideGeoBlocked, hideN247 = s.hideNot247, src = src, q = q)
+
+    /** Canal + escolhas atuais (nome, grupo e favorito vêm da tabela de escolhas em memória). */
+    fun item(ch: Channel, map: Map<String, ChannelState> = _states.value): ChannelItem {
+        val st = map[ch.key] ?: ChannelState()
+        val g = st.customGroup
+        return ChannelItem(if (g != null) ch.copy(groups = listOf(g)) else ch, st)
+    }
+
+    fun byKey(key: String): Channel? = try {
+        db.byKey(key)
+    } catch (e: Exception) {
+        null
+    }
+
+    // ---------------------------------------------------------------- backup
+
+    /** Grava fontes, pacotes, canais à mão e todas as escolhas num arquivo JSON. */
+    fun exportBackup(out: OutputStream) {
+        val w = JsonWriter(out.bufferedWriter(Charsets.UTF_8))
+        w.beginObject()
+        w.name("app").value("tvaberta")
+        w.name("version").value(1L)
+        w.name("sources").beginArray()
+        for (s in _sources.value) {
+            w.beginObject()
+            w.name("id").value(s.id)
+            w.name("name").value(s.name)
+            w.name("url").value(s.url)
+            w.name("enabled").value(s.enabled)
+            w.endObject()
         }
+        w.endArray()
+        w.name("packs").beginArray()
+        for (p in _packs.value) {
+            w.beginObject()
+            w.name("id").value(p.id)
+            w.name("name").value(p.name)
+            w.name("time").value(p.time)
+            w.endObject()
+        }
+        w.endArray()
+        w.name("manual").beginArray()
+        db.forEachManual { c, pack ->
+            w.beginObject()
+            w.name("key").value(c.key)
+            w.name("name").value(c.name)
+            w.name("groups").beginArray()
+            for (g in c.groups) w.value(g)
+            w.endArray()
+            w.name("urls").beginArray()
+            for (u in c.urls) w.value(u)
+            w.endArray()
+            if (c.logo != null) w.name("logo").value(c.logo)
+            if (c.userAgent != null) w.name("ua").value(c.userAgent)
+            if (c.referrer != null) w.name("ref").value(c.referrer)
+            if (c.quality != null) w.name("q").value(c.quality)
+            if (pack != null) w.name("pack").value(pack)
+            w.endObject()
+        }
+        w.endArray()
+        w.name("states").beginObject()
+        for ((k, v) in _states.value) {
+            w.name(k).beginObject()
+            if (v.disabled) w.name("d").value(true)
+            if (v.deleted) w.name("x").value(true)
+            if (v.favorite) w.name("f").value(true)
+            if (!v.customName.isNullOrBlank()) w.name("n").value(v.customName)
+            if (v.plays > 0) w.name("p").value(v.plays.toLong())
+            if (v.lastPlayed > 0L) w.name("l").value(v.lastPlayed)
+            if (!v.customGroup.isNullOrBlank()) w.name("g").value(v.customGroup)
+            w.endObject()
+        }
+        w.endObject()
+        w.endObject()
+        w.flush()
+        w.close()
+    }
+
+    /**
+     * Restaura um backup: troca fontes, canais à mão e escolhas pelas do arquivo. Depois recarrega as
+     * listas do cache (quem não tiver cache precisa de "Atualizar agora"). Devolve false se o arquivo
+     * não for um backup do app.
+     */
+    suspend fun importBackup(input: InputStream): Boolean = withContext(Dispatchers.IO) {
+        ensureLoaded()
+        val srcs = ArrayList<Source>()
+        val packs = ArrayList<ImportPack>()
+        val manualList = ArrayList<Pair<Channel, String?>>()
+        val st = HashMap<String, ChannelState>()
+        var isBackup = false
+        try {
+            val r = JsonReader(input.bufferedReader(Charsets.UTF_8))
+            r.beginObject()
+            while (r.hasNext()) {
+                when (r.nextName()) {
+                    "app" -> isBackup = r.nextString() == "tvaberta"
+                    "sources" -> {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            var id = ""
+                            var name = ""
+                            var url = ""
+                            var en = true
+                            r.beginObject()
+                            while (r.hasNext()) {
+                                when (r.nextName()) {
+                                    "id" -> id = r.nextString()
+                                    "name" -> name = r.nextString()
+                                    "url" -> url = r.nextString()
+                                    "enabled" -> en = r.nextBoolean()
+                                    else -> r.skipValue()
+                                }
+                            }
+                            r.endObject()
+                            if (id.isNotEmpty() && url.isNotEmpty()) srcs.add(Source(id, name, url, en))
+                        }
+                        r.endArray()
+                    }
+                    "packs" -> {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            var id = ""
+                            var name = "Importado"
+                            var time = 0L
+                            r.beginObject()
+                            while (r.hasNext()) {
+                                when (r.nextName()) {
+                                    "id" -> id = r.nextString()
+                                    "name" -> name = r.nextString()
+                                    "time" -> time = r.nextLong()
+                                    else -> r.skipValue()
+                                }
+                            }
+                            r.endObject()
+                            if (id.isNotEmpty()) packs.add(ImportPack(id, name, time))
+                        }
+                        r.endArray()
+                    }
+                    "manual" -> {
+                        r.beginArray()
+                        while (r.hasNext()) {
+                            var key = ""
+                            var name = ""
+                            val groups = ArrayList<String>()
+                            val urls = ArrayList<String>()
+                            var logo: String? = null
+                            var ua: String? = null
+                            var ref: String? = null
+                            var q: String? = null
+                            var pack: String? = null
+                            r.beginObject()
+                            while (r.hasNext()) {
+                                when (r.nextName()) {
+                                    "key" -> key = r.nextString()
+                                    "name" -> name = r.nextString()
+                                    "groups" -> {
+                                        r.beginArray()
+                                        while (r.hasNext()) groups.add(r.nextString())
+                                        r.endArray()
+                                    }
+                                    "urls" -> {
+                                        r.beginArray()
+                                        while (r.hasNext()) urls.add(r.nextString())
+                                        r.endArray()
+                                    }
+                                    "logo" -> logo = r.nextString()
+                                    "ua" -> ua = r.nextString()
+                                    "ref" -> ref = r.nextString()
+                                    "q" -> q = r.nextString()
+                                    "pack" -> pack = r.nextString()
+                                    else -> r.skipValue()
+                                }
+                            }
+                            r.endObject()
+                            if (key.isNotEmpty() && urls.isNotEmpty()) {
+                                manualList.add(
+                                    Pair(
+                                        Channel(
+                                            key, name, if (groups.isEmpty()) listOf("Manual") else groups, logo,
+                                            urls, ua, ref, q, false, false, "manual"
+                                        ),
+                                        pack
+                                    )
+                                )
+                            }
+                        }
+                        r.endArray()
+                    }
+                    "states" -> {
+                        r.beginObject()
+                        while (r.hasNext()) {
+                            val k = r.nextName()
+                            var s = ChannelState()
+                            r.beginObject()
+                            while (r.hasNext()) {
+                                when (r.nextName()) {
+                                    "d" -> s = s.copy(disabled = r.nextBoolean())
+                                    "x" -> s = s.copy(deleted = r.nextBoolean())
+                                    "f" -> s = s.copy(favorite = r.nextBoolean())
+                                    "n" -> s = s.copy(customName = r.nextString())
+                                    "p" -> s = s.copy(plays = r.nextInt())
+                                    "l" -> s = s.copy(lastPlayed = r.nextLong())
+                                    "g" -> s = s.copy(customGroup = r.nextString())
+                                    else -> r.skipValue()
+                                }
+                            }
+                            r.endObject()
+                            st[k] = s
+                        }
+                        r.endObject()
+                    }
+                    else -> r.skipValue()
+                }
+            }
+            r.endObject()
+        } catch (e: Exception) {
+            return@withContext false
+        }
+        if (!isBackup) return@withContext false
+
+        _sources.value = if (srcs.isEmpty()) _sources.value else srcs
+        persistSources()
+        _packs.value = packs
+        persistPacks()
+        synchronized(wlock) {
+            db.inTx {
+                db.deleteManualAll()
+                for ((c, pack) in manualList) db.put(c, pack, false)
+                db.clearStates()
+            }
+            db.releaseStatements()
+        }
+        val grp = st.filter { it.value.customGroup != null }.keys
+        db.saveStates(st, grp)
+        _states.value = st
+        reload()
+        _stateVersion.update { it + 1 }
+        true
     }
 
     private fun writeAtomic(target: File, text: String) {

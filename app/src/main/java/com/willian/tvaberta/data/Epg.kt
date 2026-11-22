@@ -79,6 +79,21 @@ object Epg {
 
     private fun fileFor(url: String) = File(dir(), "g" + Integer.toHexString(url.hashCode()) + ".xml")
 
+    private const val MAX_EPG_BYTES = 512L * 1024L * 1024L
+
+    private fun copyLimited(input: InputStream, output: java.io.OutputStream, maxBytes: Long) {
+        val buffer = ByteArray(64 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) throw IOException("Arquivo EPG excede o limite de 512 MB")
+            output.write(buffer, 0, n)
+        }
+        output.flush()
+    }
+
     fun hasCache(url: String): Boolean = fileFor(url).exists()
 
     fun clearCache() {
@@ -104,9 +119,14 @@ object Epg {
                         client.newCall(req).execute().use { r ->
                             if (!r.isSuccessful) throw IOException("HTTP " + r.code)
                             val body = r.body ?: throw IOException("vazio")
+                            if (body.contentLength() > MAX_EPG_BYTES) {
+                                throw IOException("Arquivo EPG excede o limite de 512 MB")
+                            }
                             val tmp = File(dir(), "download.tmp")
                             body.byteStream().use { input ->
-                                tmp.outputStream().use { out -> input.copyTo(out) }
+                                tmp.outputStream().buffered().use { out ->
+                                    copyLimited(input, out, MAX_EPG_BYTES)
+                                }
                             }
                             val target = fileFor(u)
                             if (!tmp.renameTo(target)) {
@@ -116,6 +136,7 @@ object Epg {
                         }
                         ok++
                     } catch (e: Exception) {
+                        File(dir(), "download.tmp").delete()
                         // este guia falhou; os outros continuam
                     }
                 }
