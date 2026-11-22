@@ -195,6 +195,8 @@ class PlayerController(private val app: Application) {
         return p
     }
 
+    private var altUrl: String? = null
+
     private fun prepareCurrent() {
         val ch = current ?: return
         val url = ch.urls.getOrNull(urlIndex) ?: return
@@ -225,11 +227,17 @@ class PlayerController(private val app: Application) {
 
         val lower = url.lowercase()
         val builder = MediaItem.Builder().setUri(url)
-        when {
-            lower.contains(".mpd") -> builder.setMimeType(MimeTypes.APPLICATION_MPD)
-            lower.contains(".m3u8") || lower.contains("m3u8") -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
-            lower.endsWith(".mp4") || lower.endsWith(".ts") || lower.endsWith(".mp3") || lower.endsWith(".aac") -> {}
-            else -> builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        val flip = altUrl == url
+        if (lower.contains(".mpd")) {
+            builder.setMimeType(MimeTypes.APPLICATION_MPD)
+        } else {
+            // Links sem extensão (comuns em listas com usuário e senha) podem ser HLS ou TS direto:
+            // tenta o palpite pela URL e, se der erro de formato, tenta o outro jeito (veja handleError).
+            val guessHls = lower.contains("m3u8") ||
+                !(lower.endsWith(".mp4") || lower.endsWith(".ts") || lower.endsWith(".mp3") ||
+                    lower.endsWith(".aac") || lower.endsWith(".mkv") || lower.endsWith(".flv"))
+            val hls = if (flip) !guessHls else guessHls
+            if (hls) builder.setMimeType(MimeTypes.APPLICATION_M3U8)
         }
         val source = DefaultMediaSourceFactory(http).createMediaSource(builder.build())
         p.setMediaSource(source)
@@ -246,6 +254,16 @@ class PlayerController(private val app: Application) {
             p.prepare()
             return
         }
+        val isFormatError = error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+        val curUrl = ch.urls.getOrNull(urlIndex)
+        if (isFormatError && curUrl != null && altUrl != curUrl) {
+            altUrl = curUrl
+            prepareCurrent()
+            return
+        }
         val s = SettingsStore.value
         if (s.autoFallback && urlIndex + 1 < ch.urls.size) {
             urlIndex++
@@ -259,6 +277,7 @@ class PlayerController(private val app: Application) {
             handler.postDelayed({ prepareCurrent() }, 2000L * retryCount)
             return
         }
+        altUrl = null
         errorText = friendly(error)
         status = PlayStatus.ERROR
     }
